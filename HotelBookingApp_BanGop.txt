@@ -1,0 +1,2472 @@
+import javax.imageio.ImageIO;
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+import javax.swing.event.ChangeListener;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.table.AbstractTableModel;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableRowSorter;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.geom.AffineTransform;
+import java.awt.image.BufferedImage;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.text.NumberFormat;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+import java.util.List;
+import java.util.function.Consumer;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+/**
+ * ============================================================================
+ * BÀI TẬP LỚN JAVA OOP - ĐỀ TÀI: ĐẶT PHÒNG KHÁCH SẠN (NHÓM8HOTELBOOKING)
+ * BẢN HOÀN CHỈNH: THÊM PHÒNG / THÊM TẦNG ĐỘNG + NHIỀU KHÁCH + DỌN PHÒNG + HÓA ĐƠN ĐỎ
+ * ============================================================================
+ */
+public class HotelBookingApp {
+    public static final Locale VI_LOCALE = Locale.forLanguageTag("vi-VN");
+
+    public static void main(String[] args) {
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (Exception ignored) {
+        }
+        SwingUtilities.invokeLater(() -> new MainWindow().setVisible(true));
+    }
+}
+
+/* ============================================================================
+ * PHẦN 1 - THÀNH VIÊN 1 (NHÓM TRƯỞNG): BaseWindow & MainWindow
+ * ============================================================================ */
+abstract class BaseWindow extends JFrame {
+    protected JMenuBar menuBar;
+    protected JMenu fileMenu, viewMenu, helpMenu;
+    protected JToolBar toolBar;
+    protected JPanel statusBar;
+    protected JLabel statusLabel;
+
+    public BaseWindow(String title, int width, int height) {
+        super(title);
+        setSize(width, height);
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLocationRelativeTo(null);
+        setLayout(new BorderLayout());
+
+        setIconImage(createColorIcon(32, new Color(41, 128, 185), "H").getImage());
+        initMenuBar();
+        initToolBar();
+        initStatusBar();
+        initUI();
+    }
+
+    protected abstract void initUI();
+
+    protected void showAbout() {
+        JOptionPane.showMessageDialog(this, getTitle(), "About", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    protected void setStatus(String msg) {
+        statusLabel.setText(" " + msg);
+    }
+
+    protected static ImageIcon createColorIcon(int size, Color bg, String symbol) {
+        BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g2 = img.createGraphics();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setColor(bg);
+        g2.fillRoundRect(0, 0, size, size, 6, 6);
+        g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Segoe UI", Font.BOLD, size == 32 ? 20 : 11));
+        FontMetrics fm = g2.getFontMetrics();
+        int x = (size - fm.stringWidth(symbol)) / 2;
+        int y = ((size - fm.getHeight()) / 2) + fm.getAscent();
+        g2.drawString(symbol, x, y);
+        g2.dispose();
+        return new ImageIcon(img);
+    }
+
+    protected JButton addToolButton(Color color, String symbol, String text, String tooltip, ActionListener action) {
+        JButton btn = new JButton(text, createColorIcon(16, color, symbol));
+        btn.setToolTipText(tooltip);
+        btn.setFocusable(false);
+        btn.addActionListener(action);
+        toolBar.add(btn);
+        return btn;
+    }
+
+    private void initMenuBar() {
+        menuBar = new JMenuBar();
+        fileMenu = new JMenu("File"); fileMenu.setMnemonic(KeyEvent.VK_F);
+        viewMenu = new JMenu("View"); viewMenu.setMnemonic(KeyEvent.VK_V);
+        helpMenu = new JMenu("Help"); helpMenu.setMnemonic(KeyEvent.VK_H);
+
+        JMenuItem exitItem = new JMenuItem("Exit");
+        exitItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Q, InputEvent.CTRL_DOWN_MASK));
+        exitItem.addActionListener(e -> dispatchEvent(new WindowEvent(this, WindowEvent.WINDOW_CLOSING)));
+        fileMenu.add(exitItem);
+
+        JMenuItem aboutItem = new JMenuItem("About...");
+        aboutItem.addActionListener(e -> showAbout());
+        helpMenu.add(aboutItem);
+
+        menuBar.add(fileMenu);
+        menuBar.add(viewMenu);
+        menuBar.add(helpMenu);
+        setJMenuBar(menuBar);
+    }
+
+    private void initToolBar() {
+        toolBar = new JToolBar();
+        toolBar.setFloatable(false);
+        add(toolBar, BorderLayout.NORTH);
+    }
+
+    private void initStatusBar() {
+        statusBar = new JPanel(new BorderLayout());
+        statusBar.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, Color.LIGHT_GRAY));
+        statusLabel = new JLabel(" Sẵn sàng");
+        statusLabel.setBorder(new EmptyBorder(4, 6, 4, 6));
+        statusBar.add(statusLabel, BorderLayout.CENTER);
+        add(statusBar, BorderLayout.SOUTH);
+    }
+}
+
+class MainWindow extends BaseWindow {
+    private HotelRepository repository;
+    private BookingService bookingService;
+    private RoomMapPanel roomMapPanel;
+    private RoomDetailPanel roomDetailPanel;
+    private BookingTableModel bookingTableModel;
+    private JTable bookingTable;
+    private ChartWindow chartWindow;
+
+    public MainWindow() {
+        super("Nhóm8HotelBooking - Hệ thống Quản lý Đặt phòng Khách sạn", 1280, 780);
+    }
+
+    @Override
+    protected void initUI() {
+        repository = new InMemoryHotelRepository();
+        bookingService = new BookingService(repository);
+
+        setupToolbarAndMenus();
+
+        roomMapPanel = new RoomMapPanel(repository.findAllRooms(), this::onRoomSelected);
+        JScrollPane mapScrollPane = new JScrollPane(roomMapPanel);
+        mapScrollPane.setBorder(BorderFactory.createTitledBorder(
+                "Sơ đồ Phòng Trực quan (Tự động co giãn khi Thêm Phòng / Thêm Tầng - Click chuột để chọn phòng)"));
+        mapScrollPane.getVerticalScrollBar().setUnitIncrement(16);
+        mapScrollPane.getHorizontalScrollBar().setUnitIncrement(16);
+
+        roomDetailPanel = new RoomDetailPanel(
+                () -> openBookingDialog(roomMapPanel.getSelectedRoom()),
+                this::toggleCleaningRequestStatus,
+                this::toggleMaintenanceStatus
+        );
+
+        JSplitPane topSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, mapScrollPane, roomDetailPanel);
+        topSplit.setResizeWeight(0.71);
+        topSplit.setDividerLocation(855);
+
+        JPanel bottomPanel = createBookingTableSection();
+
+        JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, topSplit, bottomPanel);
+        mainSplit.setResizeWeight(0.58);
+        mainSplit.setDividerLocation(435);
+
+        add(mainSplit, BorderLayout.CENTER);
+
+        Room defaultRoom = repository.findRoomByNumber("402");
+        if (defaultRoom == null && !repository.findAllRooms().isEmpty()) {
+            defaultRoom = repository.findAllRooms().get(0);
+        }
+        if (defaultRoom != null) {
+            roomMapPanel.setSelectedRoom(defaultRoom);
+            updateRoomDetailView(defaultRoom);
+        }
+        updateStatusBar();
+    }
+
+    private void setupToolbarAndMenus() {
+        addToolButton(new Color(39, 174, 96), "+", "Đặt phòng mới", "Mở hộp thoại đặt phòng (hỗ trợ nhiều khách)",
+                e -> openBookingDialog(roomMapPanel.getSelectedRoom()));
+        addToolButton(new Color(22, 160, 133), "R", "+ Thêm Phòng", "Thêm một phòng mới vào tầng bất kỳ",
+                e -> openAddRoomOrFloorDialog(0));
+        addToolButton(new Color(41, 128, 185), "T", "+ Thêm Tầng", "Xây thêm một tầng mới với nhiều phòng",
+                e -> openAddRoomOrFloorDialog(1));
+        addToolButton(new Color(230, 126, 34), "$", "Check-out & Hóa đơn", "Thanh toán trả phòng và in hóa đơn có mộc đỏ",
+                e -> openCheckOutDialog());
+        addToolButton(new Color(52, 152, 219), "D", "Yêu cầu Dọn phòng", "Bật/Tắt trạng thái yêu cầu dọn phòng",
+                e -> toggleCleaningRequestStatus());
+        addToolButton(new Color(142, 68, 173), "F", "Lọc phòng", "Tra cứu lọc phòng theo tiêu chí",
+                e -> openRoomFilterDialog());
+        addToolButton(new Color(192, 57, 43), "C", "Biểu đồ Thống kê", "Xem biểu đồ Công suất & Doanh thu 14 ngày",
+                e -> openChartWindow());
+        addToolButton(new Color(44, 62, 80), "S", "Xuất CSV", "Xuất danh sách đặt phòng ra file CSV",
+                e -> exportBookingsToCsv());
+
+        toolBar.addSeparator(new Dimension(10, 0));
+        toolBar.add(new JLabel(" Chính sách giá: "));
+
+        PricingPolicy[] policies = { new StandardPricing(), new WeekendPricing(), new HolidayPricing() };
+        JComboBox<PricingPolicy> policyCombo = new JComboBox<>(policies);
+        policyCombo.setMaximumSize(new Dimension(215, 28));
+        policyCombo.addActionListener(e -> {
+            PricingPolicy selected = (PricingPolicy) policyCombo.getSelectedItem();
+            if (selected != null) {
+                bookingService.setPricingPolicy(selected);
+                updateRoomDetailView(roomMapPanel.getSelectedRoom());
+                bookingTableModel.fireTableDataChanged();
+                setStatus("Đã đổi chính sách giá: " + selected.getPolicyName());
+            }
+        });
+        toolBar.add(policyCombo);
+
+        // Menu File bổ sung Thêm Phòng & Thêm Tầng
+        JMenuItem addRoomMenu = new JMenuItem("Thêm Phòng mới...");
+        addRoomMenu.addActionListener(e -> openAddRoomOrFloorDialog(0));
+        JMenuItem addFloorMenu = new JMenuItem("Thêm Tầng mới...");
+        addFloorMenu.addActionListener(e -> openAddRoomOrFloorDialog(1));
+        fileMenu.insert(addRoomMenu, 0);
+        fileMenu.insert(addFloorMenu, 1);
+        fileMenu.insertSeparator(2);
+
+        JMenuItem showChartItem = new JMenuItem("Mở cửa sổ Biểu đồ Thống kê");
+        showChartItem.addActionListener(e -> openChartWindow());
+        viewMenu.add(showChartItem);
+    }
+
+    private JPanel createBookingTableSection() {
+        JPanel panel = new JPanel(new BorderLayout(6, 6));
+        panel.setBorder(BorderFactory.createTitledBorder("Danh sách Đặt phòng (Hiển thị đầy đủ số lượng khách, giới tính & trạng thái Check-out)"));
+
+        bookingTableModel = new BookingTableModel(repository.findAllBookings(), bookingService);
+        bookingTable = new JTable(bookingTableModel);
+        bookingTable.setRowHeight(26);
+        bookingTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+
+        BookingStatusCellRenderer renderer = new BookingStatusCellRenderer();
+        for (int i = 0; i < bookingTable.getColumnCount(); i++) {
+            bookingTable.getColumnModel().getColumn(i).setCellRenderer(renderer);
+        }
+
+        TableRowSorter<BookingTableModel> sorter = new TableRowSorter<>(bookingTableModel);
+        bookingTable.setRowSorter(sorter);
+
+        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 4));
+        topBar.add(new JLabel("Tìm nhanh (Số phòng / Tên khách / CCCD):"));
+        JTextField txtSearch = new JTextField(22);
+        txtSearch.getDocument().addDocumentListener(new DocumentListener() {
+            private void filter() {
+                String kw = txtSearch.getText().trim();
+                sorter.setRowFilter(kw.isEmpty() ? null :
+                        RowFilter.regexFilter("(?i)" + Pattern.quote(kw), 1, 2, 4));
+            }
+            @Override public void insertUpdate(DocumentEvent e) { filter(); }
+            @Override public void removeUpdate(DocumentEvent e) { filter(); }
+            @Override public void changedUpdate(DocumentEvent e) { filter(); }
+        });
+        topBar.add(txtSearch);
+
+        JButton btnCheckOut = new JButton("Check-out & Lập Hóa đơn dòng đang chọn");
+        btnCheckOut.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnCheckOut.addActionListener(e -> openCheckOutDialog());
+        topBar.add(btnCheckOut);
+
+        panel.add(topBar, BorderLayout.NORTH);
+        panel.add(new JScrollPane(bookingTable), BorderLayout.CENTER);
+        return panel;
+    }
+
+    private void updateRoomDetailView(Room room) {
+        if (room == null) return;
+        Booking activeBooking = bookingService.findActiveBookingByRoom(room);
+        roomDetailPanel.displayRoom(room, bookingService.getPricingPolicy(), activeBooking);
+    }
+
+    private void onRoomSelected(Room room) {
+        updateRoomDetailView(room);
+        String cleanNote = room.isCleaningRequested() ? " | [ĐANG YÊU CẦU DỌN PHÒNG]" : "";
+        setStatus("Đang chọn Phòng " + room.getRoomNumber() + " (" + room.getRoomTypeName()
+                + " - " + room.getStatus().getDisplayName() + ")" + cleanNote);
+    }
+
+    private void openAddRoomOrFloorDialog(int defaultTabIndex) {
+        int currentFloor = (roomMapPanel.getSelectedRoom() != null)
+                ? roomMapPanel.getSelectedRoom().getFloor() : 1;
+        AddRoomFloorDialog dialog = new AddRoomFloorDialog(this, bookingService, currentFloor, defaultTabIndex);
+        dialog.setVisible(true);
+        if (dialog.isChanged()) {
+            Room newlyAdded = dialog.getLastAddedRoom();
+            if (newlyAdded != null) {
+                roomMapPanel.setSelectedRoom(newlyAdded);
+            }
+            roomMapPanel.revalidate();
+            refreshAllViews();
+            setStatus(dialog.getActionSummaryMessage());
+        }
+    }
+
+    private void toggleCleaningRequestStatus() {
+        Room selected = roomMapPanel.getSelectedRoom();
+        if (selected == null) return;
+        selected.setCleaningRequested(!selected.isCleaningRequested());
+        refreshAllViews();
+        if (selected.isCleaningRequested()) {
+            setStatus("Đã gửi YÊU CẦU DỌN PHÒNG cho Phòng " + selected.getRoomNumber());
+        } else {
+            setStatus("Đã xác nhận DỌN PHÒNG XONG cho Phòng " + selected.getRoomNumber());
+        }
+    }
+
+    private void toggleMaintenanceStatus() {
+        Room selected = roomMapPanel.getSelectedRoom();
+        if (selected == null) return;
+        if (selected.getStatus() == RoomStatus.OCCUPIED) {
+            JOptionPane.showMessageDialog(this, "Phòng đang có khách ở, không thể chuyển sang Bảo trì!",
+                    "Cảnh báo", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        selected.setStatus(selected.getStatus() == RoomStatus.MAINTENANCE
+                ? RoomStatus.AVAILABLE : RoomStatus.MAINTENANCE);
+        refreshAllViews();
+    }
+
+    private void openBookingDialog(Room preselectedRoom) {
+        BookingDialog dialog = new BookingDialog(this, bookingService, preselectedRoom);
+        dialog.setVisible(true);
+        if (dialog.isConfirmed()) {
+            Booking created = dialog.getCreatedBooking();
+            roomMapPanel.setSelectedRoom(created.getRoom());
+            refreshAllViews();
+            setStatus("Đã đặt thành công phòng " + created.getRoom().getRoomNumber()
+                    + " cho " + created.getGuests().size() + " khách lưu trú!");
+        }
+    }
+
+    private void openCheckOutDialog() {
+        int viewRow = bookingTable.getSelectedRow();
+        if (viewRow < 0) {
+            JOptionPane.showMessageDialog(this, "Vui lòng chọn một dòng đặt phòng trong bảng bên dưới để Check-out!",
+                    "Chưa chọn đơn đặt phòng", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        int modelRow = bookingTable.convertRowIndexToModel(viewRow);
+        Booking selectedBooking = bookingTableModel.getBookingAt(modelRow);
+
+        if (selectedBooking.isCheckedOut()) {
+            JOptionPane.showMessageDialog(this, "Đơn đặt phòng này đã được Check-out trước đó!",
+                    "Thông báo", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        InvoiceDialog dialog = new InvoiceDialog(this, selectedBooking, bookingService);
+        dialog.setVisible(true);
+        if (dialog.isPaid()) {
+            refreshAllViews();
+            setStatus("Đã Check-out thành công phòng " + selectedBooking.getRoom().getRoomNumber()
+                    + " (Phòng đã tự động bật cờ Yêu cầu dọn phòng)");
+        }
+    }
+
+    private void openRoomFilterDialog() {
+        RoomFilterDialog dialog = new RoomFilterDialog(this, repository.findAllRooms(), room -> {
+            roomMapPanel.setSelectedRoom(room);
+            onRoomSelected(room);
+        });
+        dialog.setVisible(true);
+    }
+
+    private void openChartWindow() {
+        if (chartWindow == null || !chartWindow.isDisplayable()) {
+            chartWindow = new ChartWindow(bookingService);
+        }
+        chartWindow.refreshCharts();
+        chartWindow.setVisible(true);
+        chartWindow.toFront();
+    }
+
+    private void exportBookingsToCsv() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setSelectedFile(new File("DanhSachDatPhong_Nhom8HotelBooking.csv"));
+        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            try {
+                DataFileManager.exportBookingsToCsv(repository.findAllBookings(),
+                        bookingService.getPricingPolicy(), chooser.getSelectedFile().toPath());
+                JOptionPane.showMessageDialog(this, "Đã xuất file CSV tại:\n" + chooser.getSelectedFile().getAbsolutePath());
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "Lỗi ghi file: " + ex.getMessage());
+            }
+        }
+    }
+
+    private void refreshAllViews() {
+        roomMapPanel.repaint();
+        updateRoomDetailView(roomMapPanel.getSelectedRoom());
+        bookingTableModel.fireTableDataChanged();
+        if (chartWindow != null && chartWindow.isDisplayable()) {
+            chartWindow.refreshCharts();
+        }
+        updateStatusBar();
+    }
+
+    private void updateStatusBar() {
+        long floors = repository.findAllRooms().stream().map(Room::getFloor).distinct().count();
+        long avail = repository.findAllRooms().stream().filter(r -> r.getStatus() == RoomStatus.AVAILABLE).count();
+        long occ = repository.findAllRooms().stream().filter(r -> r.getStatus() == RoomStatus.OCCUPIED).count();
+        long needClean = repository.findAllRooms().stream().filter(Room::isCleaningRequested).count();
+        setStatus(String.format("Quy mô: %d tầng - %d phòng | Trống: %d | Đang có khách: %d | Cần dọn phòng: %d | Tổng đơn: %d | Chính sách: %s",
+                floors, repository.findAllRooms().size(), avail, occ, needClean,
+                repository.findAllBookings().size(), bookingService.getPricingPolicy().getPolicyName()));
+    }
+
+    @Override
+    protected void showAbout() {
+        new AboutDialog(this).setVisible(true);
+    }
+}
+
+/* ============================================================================
+ * PHẦN 2 - THÀNH VIÊN 2: Phân cấp lớp Room (Có thêm thuộc tính Yêu cầu dọn phòng)
+ * ============================================================================ */
+enum RoomStatus {
+    AVAILABLE("Trống"), OCCUPIED("Đang có khách"), MAINTENANCE("Bảo trì");
+    private final String displayName;
+    RoomStatus(String displayName) { this.displayName = displayName; }
+    public String getDisplayName() { return displayName; }
+}
+
+abstract class Room {
+    private String roomNumber;
+    private int floor;
+    private RoomStatus status;
+    private boolean cleaningRequested;
+
+    public Room(String roomNumber, int floor, RoomStatus status) {
+        setRoomNumber(roomNumber);
+        setFloor(floor);
+        setStatus(status);
+        this.cleaningRequested = false;
+    }
+
+    public abstract double getPricePerNight();
+    public abstract String getAmenities();
+    public abstract String getRoomTypeName();
+    public abstract int getMaxOccupancy();
+
+    public String getRoomNumber() { return roomNumber; }
+    public void setRoomNumber(String roomNumber) {
+        if (roomNumber == null || roomNumber.trim().isEmpty())
+            throw new IllegalArgumentException("Số phòng không được rỗng!");
+        this.roomNumber = roomNumber.trim();
+    }
+
+    public int getFloor() { return floor; }
+    public void setFloor(int floor) {
+        if (floor < 1 || floor > 50) throw new IllegalArgumentException("Tầng phải từ 1 đến 50!");
+        this.floor = floor;
+    }
+
+    public RoomStatus getStatus() { return status; }
+    public void setStatus(RoomStatus status) { this.status = Objects.requireNonNull(status); }
+
+    public boolean isCleaningRequested() { return cleaningRequested; }
+    public void setCleaningRequested(boolean cleaningRequested) {
+        this.cleaningRequested = cleaningRequested;
+    }
+
+    @Override
+    public String toString() {
+        String cleanTag = cleaningRequested ? " - Cần dọn phòng" : "";
+        return String.format("Phòng %s (%s - Tầng %d - %s%s)",
+                roomNumber, getRoomTypeName(), floor, status.getDisplayName(), cleanTag);
+    }
+}
+
+class StandardRoom extends Room {
+    private final int bedCount;
+    public StandardRoom(String roomNumber, int floor, RoomStatus status, int bedCount) {
+        super(roomNumber, floor, status);
+        this.bedCount = Math.max(1, bedCount);
+    }
+    @Override public double getPricePerNight() { return 500_000; }
+    @Override public String getAmenities() { return "Wifi tốc độ cao, Tivi 43 inch, Điều hòa (" + bedCount + " giường - Tối đa " + getMaxOccupancy() + " người)"; }
+    @Override public String getRoomTypeName() { return "Standard"; }
+    @Override public int getMaxOccupancy() { return bedCount * 2; }
+}
+
+class DeluxeRoom extends Room {
+    private final String viewDirection;
+    public DeluxeRoom(String roomNumber, int floor, RoomStatus status, String viewDirection) {
+        super(roomNumber, floor, status);
+        this.viewDirection = viewDirection;
+    }
+    @Override public double getPricePerNight() { return 900_000; }
+    @Override public String getAmenities() { return "Smart TV 55 inch, Ban công (" + viewDirection + "), Bồn tắm nằm, Minibar (Tối đa 4 người)"; }
+    @Override public String getRoomTypeName() { return "Deluxe"; }
+    @Override public int getMaxOccupancy() { return 4; }
+}
+
+class SuiteRoom extends Room {
+    private final boolean hasJacuzzi;
+    public SuiteRoom(String roomNumber, int floor, RoomStatus status, boolean hasJacuzzi) {
+        super(roomNumber, floor, status);
+        this.hasJacuzzi = hasJacuzzi;
+    }
+    @Override public double getPricePerNight() { return 1_800_000; }
+    @Override public String getAmenities() {
+        return "Phòng khách VIP riêng, Giường King, Buffet sáng miễn phí"
+                + (hasJacuzzi ? ", Bể sục Jacuzzi" : "") + " (Tối đa 6 người)";
+    }
+    @Override public String getRoomTypeName() { return "Suite"; }
+    @Override public int getMaxOccupancy() { return 6; }
+}
+
+/* ============================================================================
+ * PHẦN 3 - THÀNH VIÊN 3: Guest (Có Giới tính), Booking (Danh sách nhiều khách) & Exception
+ * ============================================================================ */
+class RoomNotAvailableException extends Exception {
+    public RoomNotAvailableException(String message) { super(message); }
+}
+
+class InvalidBookingDataException extends Exception {
+    public InvalidBookingDataException(String message) { super(message); }
+}
+
+enum Gender {
+    NAM("Nam"), NU("Nữ"), KHAC("Khác");
+    private final String label;
+    Gender(String label) { this.label = label; }
+    public String getLabel() { return label; }
+    @Override public String toString() { return label; }
+}
+
+class Guest {
+    private String cccd;
+    private String name;
+    private Gender gender;
+    private String phone;
+
+    public Guest(String cccd, String name, Gender gender, String phone) throws InvalidBookingDataException {
+        setCccd(cccd);
+        setName(name);
+        setGender(gender);
+        setPhone(phone);
+    }
+
+    public String getCccd() { return cccd; }
+    public void setCccd(String cccd) throws InvalidBookingDataException {
+        if (cccd == null || !cccd.trim().matches("\\d{9,12}"))
+            throw new InvalidBookingDataException("Số CCCD của khách '" + (name != null ? name : "") + "' phải gồm từ 9 đến 12 chữ số!");
+        this.cccd = cccd.trim();
+    }
+
+    public String getName() { return name; }
+    public void setName(String name) throws InvalidBookingDataException {
+        if (name == null || name.trim().length() < 2)
+            throw new InvalidBookingDataException("Họ tên khách hàng không được để trống (tối thiểu 2 ký tự)!");
+        this.name = name.trim();
+    }
+
+    public Gender getGender() { return gender; }
+    public void setGender(Gender gender) {
+        this.gender = (gender == null) ? Gender.NAM : gender;
+    }
+
+    public String getPhone() { return phone; }
+    public void setPhone(String phone) throws InvalidBookingDataException {
+        if (phone == null || !phone.trim().matches("0\\d{9}"))
+            throw new InvalidBookingDataException("Số điện thoại phải gồm 10 chữ số và bắt đầu bằng số 0!");
+        this.phone = phone.trim();
+    }
+
+    @Override
+    public String toString() {
+        return String.format("%s (%s - CCCD: %s - SĐT: %s)", name, gender.getLabel(), cccd, phone);
+    }
+}
+
+class Booking {
+    private final String bookingId;
+    private final List<Guest> guests = new ArrayList<>();
+    private final Room room;
+    private final LocalDate checkIn;
+    private final LocalDate checkOut;
+    private boolean checkedOut;
+
+    public Booking(String bookingId, List<Guest> guestList, Room room, LocalDate checkIn, LocalDate checkOut)
+            throws InvalidBookingDataException {
+        if (guestList == null || guestList.isEmpty())
+            throw new InvalidBookingDataException("Phải có ít nhất 1 khách hàng trong danh sách đặt phòng!");
+        if (room == null)
+            throw new InvalidBookingDataException("Phòng không được để trống!");
+        if (checkIn == null || checkOut == null || !checkOut.isAfter(checkIn))
+            throw new InvalidBookingDataException("Ngày Check-out phải sau ngày Check-in ít nhất 1 đêm!");
+        this.bookingId = bookingId;
+        this.guests.addAll(guestList);
+        this.room = room;
+        this.checkIn = checkIn;
+        this.checkOut = checkOut;
+        this.checkedOut = false;
+    }
+
+    public Guest getPrimaryGuest() {
+        return guests.get(0);
+    }
+
+    public List<Guest> getGuests() {
+        return Collections.unmodifiableList(guests);
+    }
+
+    public String getGuestsSummary() {
+        if (guests.size() == 1) {
+            Guest g = guests.get(0);
+            return g.getName() + " (" + g.getGender().getLabel() + ")";
+        }
+        return getPrimaryGuest().getName() + " (+" + (guests.size() - 1) + " người đi cùng)";
+    }
+
+    public String getAllGendersSummary() {
+        return guests.stream().map(g -> g.getGender().getLabel()).collect(Collectors.joining(", "));
+    }
+
+    public long nights() { return ChronoUnit.DAYS.between(checkIn, checkOut); }
+    public double totalCost() { return nights() * room.getPricePerNight(); }
+    public double totalCost(PricingPolicy policy) {
+        return policy != null ? policy.calculatePrice(room, nights()) : totalCost();
+    }
+
+    public String getBookingId() { return bookingId; }
+    public Room getRoom() { return room; }
+    public LocalDate getCheckIn() { return checkIn; }
+    public LocalDate getCheckOut() { return checkOut; }
+    public boolean isCheckedOut() { return checkedOut; }
+    public void setCheckedOut(boolean checkedOut) { this.checkedOut = checkedOut; }
+}
+
+/* ============================================================================
+ * PHẦN 4 - THÀNH VIÊN 4: PricingPolicy (BONUS Strategy), ServiceCharge & Invoice
+ * ============================================================================ */
+interface PricingPolicy {
+    String getPolicyName();
+    double calculatePrice(Room room, long nights);
+}
+
+class StandardPricing implements PricingPolicy {
+    @Override public String getPolicyName() { return "Giá Tiêu chuẩn (Ngày thường)"; }
+    @Override public double calculatePrice(Room room, long nights) { return room.getPricePerNight() * nights; }
+    @Override public String toString() { return getPolicyName(); }
+}
+
+class WeekendPricing implements PricingPolicy {
+    @Override public String getPolicyName() { return "Giá Cuối tuần (+20%)"; }
+    @Override public double calculatePrice(Room room, long nights) { return room.getPricePerNight() * 1.20 * nights; }
+    @Override public String toString() { return getPolicyName(); }
+}
+
+class HolidayPricing implements PricingPolicy {
+    @Override public String getPolicyName() { return "Giá Ngày Lễ / Tết (+50%)"; }
+    @Override public double calculatePrice(Room room, long nights) { return room.getPricePerNight() * 1.50 * nights; }
+    @Override public String toString() { return getPolicyName(); }
+}
+
+enum ServiceType {
+    MINIBAR("Minibar & Snack", new Color(230, 126, 34)),
+    LAUNDRY("Giặt ủi cao cấp", new Color(52, 152, 219)),
+    BREAKFAST("Buffet Sáng VIP", new Color(39, 174, 96)),
+    SPA("Spa & Xông hơi", new Color(155, 89, 182));
+
+    private final String shortTitle;
+    private final Color themeColor;
+
+    ServiceType(String shortTitle, Color themeColor) {
+        this.shortTitle = shortTitle;
+        this.themeColor = themeColor;
+    }
+
+    public String getShortTitle() { return shortTitle; }
+    public Color getThemeColor() { return themeColor; }
+}
+
+class ServiceCharge {
+    private final String serviceName;
+    private final double amount;
+    private final ServiceType type;
+
+    public ServiceCharge(String serviceName, double amount, ServiceType type) {
+        this.serviceName = serviceName;
+        this.amount = amount;
+        this.type = type;
+    }
+
+    public String getServiceName() { return serviceName; }
+    public double getAmount() { return amount; }
+    public ServiceType getType() { return type; }
+}
+
+class Invoice {
+    public static final String COMPANY_NAME = "NHÓM8HOTELBOOKING";
+    private final Booking booking;
+    private final PricingPolicy appliedPolicy;
+    private final List<ServiceCharge> serviceCharges = new ArrayList<>();
+    private final LocalDateTime issuedAt = LocalDateTime.now();
+
+    public Invoice(Booking booking, PricingPolicy appliedPolicy) {
+        this.booking = booking;
+        this.appliedPolicy = appliedPolicy;
+    }
+
+    public void addServiceCharge(ServiceCharge charge) {
+        if (charge != null) serviceCharges.add(charge);
+    }
+
+    public List<ServiceCharge> getServiceCharges() {
+        return Collections.unmodifiableList(serviceCharges);
+    }
+
+    public Booking getBooking() { return booking; }
+    public PricingPolicy getAppliedPolicy() { return appliedPolicy; }
+    public LocalDateTime getIssuedAt() { return issuedAt; }
+    public double getRoomCharge() { return booking.totalCost(appliedPolicy); }
+    public double getTotalServiceCharges() {
+        return serviceCharges.stream().mapToDouble(ServiceCharge::getAmount).sum();
+    }
+    public double getGrandTotal() { return getRoomCharge() + getTotalServiceCharges(); }
+}
+
+/* ============================================================================
+ * PHẦN 5 - THÀNH VIÊN 5: HotelRepository, BookingService (Hỗ trợ Thêm Phòng / Tầng) & DataFileManager
+ * ============================================================================ */
+interface HotelRepository {
+    List<Room> findAllRooms();
+    Room findRoomByNumber(String roomNumber);
+    void addRoom(Room room);
+    List<Booking> findAllBookings();
+    void addBooking(Booking booking);
+    Map<LocalDate, Double> getRevenueLast14Days();
+    void addRevenue(LocalDate date, double amount);
+}
+
+class InMemoryHotelRepository implements HotelRepository {
+    private final List<Room> rooms = new ArrayList<>();
+    private final List<Booking> bookings = new ArrayList<>();
+    private final Map<LocalDate, Double> revenueByDate = new LinkedHashMap<>();
+
+    public InMemoryHotelRepository() {
+        for (int floor = 1; floor <= 4; floor++) {
+            for (int idx = 1; idx <= 6; idx++) {
+                String roomNo = String.format("%d%02d", floor, idx);
+                if (floor <= 2) rooms.add(new StandardRoom(roomNo, floor, RoomStatus.AVAILABLE, (idx % 2) + 1));
+                else if (floor == 3) rooms.add(new DeluxeRoom(roomNo, floor, RoomStatus.AVAILABLE, idx <= 3 ? "Hướng Biển" : "Hướng Phố"));
+                else rooms.add(new SuiteRoom(roomNo, floor, RoomStatus.AVAILABLE, idx % 2 == 0));
+            }
+        }
+        findRoomByNumber("206").setStatus(RoomStatus.MAINTENANCE);
+
+        try {
+            LocalDate today = LocalDate.now();
+            Room r102 = findRoomByNumber("102");
+            Room r301 = findRoomByNumber("301");
+            Room r402 = findRoomByNumber("402");
+
+            bookings.add(new Booking("BK-1001",
+                    List.of(new Guest("001204012345", "Nguyễn Văn Minh", Gender.NAM, "0901234567")),
+                    r102, today.minusDays(1), today.plusDays(2)));
+            r102.setStatus(RoomStatus.OCCUPIED);
+
+            bookings.add(new Booking("BK-1002",
+                    List.of(
+                            new Guest("079203009876", "Trần Thị Ngọc Lan", Gender.NU, "0912345678"),
+                            new Guest("079201005566", "Phạm Quốc Bảo", Gender.NAM, "0918889999")
+                    ),
+                    r301, today, today.plusDays(3)));
+            r301.setStatus(RoomStatus.OCCUPIED);
+
+            bookings.add(new Booking("BK-1003",
+                    List.of(
+                            new Guest("036205005432", "Lê Hoàng Nam", Gender.NAM, "0987654321"),
+                            new Guest("036206008899", "Nguyễn Mai Phương", Gender.NU, "0986667777"),
+                            new Guest("036212001122", "Lê Hoàng Quân", Gender.NAM, "0985554444")
+                    ),
+                    r402, today.minusDays(2), today.plusDays(1)));
+            r402.setStatus(RoomStatus.OCCUPIED);
+            r402.setCleaningRequested(true);
+        } catch (Exception ignored) {
+        }
+
+        LocalDate today = LocalDate.now();
+        double[] sampleMillions = {3.5, 4.2, 3.0, 5.4, 6.2, 7.8, 6.5, 4.1, 4.9, 6.3, 8.4, 7.2, 5.6, 4.5};
+        for (int i = 13; i >= 0; i--) {
+            revenueByDate.put(today.minusDays(i), sampleMillions[13 - i] * 1_000_000);
+        }
+    }
+
+    @Override public List<Room> findAllRooms() { return Collections.unmodifiableList(rooms); }
+    @Override public Room findRoomByNumber(String no) {
+        return rooms.stream().filter(r -> r.getRoomNumber().equalsIgnoreCase(no)).findFirst().orElse(null);
+    }
+    @Override public void addRoom(Room room) {
+        if (room != null) rooms.add(room);
+    }
+    @Override public List<Booking> findAllBookings() { return Collections.unmodifiableList(bookings); }
+    @Override public void addBooking(Booking b) { bookings.add(b); }
+    @Override public Map<LocalDate, Double> getRevenueLast14Days() { return Collections.unmodifiableMap(revenueByDate); }
+    @Override public void addRevenue(LocalDate date, double amount) { revenueByDate.merge(date, amount, Double::sum); }
+}
+
+class BookingService {
+    private final HotelRepository repository;
+    private PricingPolicy pricingPolicy = new StandardPricing();
+    private int seq = 1004;
+
+    public BookingService(HotelRepository repository) { this.repository = repository; }
+    public PricingPolicy getPricingPolicy() { return pricingPolicy; }
+    public void setPricingPolicy(PricingPolicy policy) { if (policy != null) this.pricingPolicy = policy; }
+    public List<Room> getAllRooms() { return repository.findAllRooms(); }
+
+    public List<Integer> getExistingFloors() {
+        return repository.findAllRooms().stream()
+                .map(Room::getFloor)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
+    }
+
+    public int getNextNewFloorNumber() {
+        return repository.findAllRooms().stream()
+                .mapToInt(Room::getFloor)
+                .max().orElse(0) + 1;
+    }
+
+    /** Tự động gợi ý mã số phòng tiếp theo trên tầng được chọn (VD: Tầng 4 đang có 6 phòng -> 407). */
+    public String suggestNextRoomNumber(int floor) {
+        long countOnFloor = repository.findAllRooms().stream()
+                .filter(r -> r.getFloor() == floor)
+                .count();
+        int nextIndex = (int) countOnFloor + 1;
+        String candidate = String.format("%d%02d", floor, nextIndex);
+        while (repository.findRoomByNumber(candidate) != null) {
+            nextIndex++;
+            candidate = String.format("%d%02d", floor, nextIndex);
+        }
+        return candidate;
+    }
+
+    /** Thêm một phòng lẻ vào tầng bất kỳ (kiểm tra trùng mã số phòng). */
+    public Room addSingleRoom(String roomNo, int floor, String type, int bedCount, String viewDir, boolean hasJacuzzi)
+            throws InvalidBookingDataException {
+        if (roomNo == null || roomNo.trim().isEmpty()) {
+            throw new InvalidBookingDataException("Mã số phòng không được để trống!");
+        }
+        String cleanNo = roomNo.trim();
+        if (repository.findRoomByNumber(cleanNo) != null) {
+            throw new InvalidBookingDataException("Số phòng '" + cleanNo + "' đã tồn tại trong khách sạn!");
+        }
+        Room newRoom = instantiateRoom(cleanNo, floor, type, bedCount, viewDir, hasJacuzzi);
+        repository.addRoom(newRoom);
+        return newRoom;
+    }
+
+    /** Xây thêm một tầng mới với số lượng phòng và hạng phòng tùy chọn. */
+    public List<Room> addNewFloor(int floor, int roomCount, String floorTypeOption)
+            throws InvalidBookingDataException {
+        if (roomCount < 1 || roomCount > 15) {
+            throw new InvalidBookingDataException("Số lượng phòng mỗi tầng phải từ 1 đến 15!");
+        }
+        List<Room> created = new ArrayList<>();
+        for (int idx = 1; idx <= roomCount; idx++) {
+            String roomNo = suggestNextRoomNumber(floor);
+            String type = floorTypeOption;
+            if ("Hỗn hợp (Standard + Deluxe + Suite)".equals(floorTypeOption)) {
+                if (idx <= 2) type = "Standard";
+                else if (idx <= 4) type = "Deluxe";
+                else type = "Suite";
+            }
+            Room r = instantiateRoom(
+                    roomNo, floor, type,
+                    (idx % 2) + 1,
+                    idx % 2 == 0 ? "Hướng Biển" : "Hướng Thành phố",
+                    true
+            );
+            repository.addRoom(r);
+            created.add(r);
+        }
+        return created;
+    }
+
+    private Room instantiateRoom(String roomNo, int floor, String type, int bedCount, String viewDir, boolean hasJacuzzi) {
+        if ("Deluxe".equalsIgnoreCase(type)) {
+            return new DeluxeRoom(roomNo, floor, RoomStatus.AVAILABLE, viewDir);
+        } else if ("Suite".equalsIgnoreCase(type)) {
+            return new SuiteRoom(roomNo, floor, RoomStatus.AVAILABLE, hasJacuzzi);
+        }
+        return new StandardRoom(roomNo, floor, RoomStatus.AVAILABLE, bedCount);
+    }
+
+    public Booking findActiveBookingByRoom(Room room) {
+        if (room == null) return null;
+        return repository.findAllBookings().stream()
+                .filter(b -> !b.isCheckedOut() && b.getRoom().getRoomNumber().equals(room.getRoomNumber()))
+                .findFirst().orElse(null);
+    }
+
+    public Booking createBooking(List<Guest> guests, Room room, LocalDate checkIn, LocalDate checkOut, boolean requestCleaning)
+            throws RoomNotAvailableException, InvalidBookingDataException {
+        if (room == null) throw new InvalidBookingDataException("Vui lòng chọn phòng!");
+        if (guests == null || guests.isEmpty())
+            throw new InvalidBookingDataException("Vui lòng nhập ít nhất 1 khách hàng!");
+        if (room.getStatus() == RoomStatus.MAINTENANCE)
+            throw new RoomNotAvailableException("Phòng " + room.getRoomNumber() + " đang bảo trì, không thể đặt!");
+        if (checkIn == null || checkOut == null || !checkOut.isAfter(checkIn))
+            throw new InvalidBookingDataException("Ngày Check-out phải sau ngày Check-in ít nhất 1 đêm!");
+
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+        for (Booking existing : repository.findAllBookings()) {
+            if (!existing.isCheckedOut() && existing.getRoom().getRoomNumber().equals(room.getRoomNumber())) {
+                if (checkIn.isBefore(existing.getCheckOut()) && checkOut.isAfter(existing.getCheckIn())) {
+                    throw new RoomNotAvailableException(String.format(
+                            "TRÙNG LỊCH ĐẶT PHÒNG!\nPhòng %s đã có lịch của đoàn khách '%s' từ %s đến %s.",
+                            room.getRoomNumber(), existing.getPrimaryGuest().getName(),
+                            existing.getCheckIn().format(fmt), existing.getCheckOut().format(fmt)));
+                }
+            }
+        }
+
+        Booking b = new Booking("BK-" + (seq++), guests, room, checkIn, checkOut);
+        repository.addBooking(b);
+        room.setStatus(RoomStatus.OCCUPIED);
+        room.setCleaningRequested(requestCleaning);
+        return b;
+    }
+
+    public Invoice checkOut(Booking booking, List<ServiceCharge> charges) {
+        Invoice invoice = new Invoice(booking, pricingPolicy);
+        if (charges != null) charges.forEach(invoice::addServiceCharge);
+        booking.setCheckedOut(true);
+
+        boolean stillActive = repository.findAllBookings().stream()
+                .anyMatch(b -> !b.isCheckedOut() && b.getRoom().getRoomNumber().equals(booking.getRoom().getRoomNumber()));
+        if (!stillActive) {
+            booking.getRoom().setStatus(RoomStatus.AVAILABLE);
+            booking.getRoom().setCleaningRequested(true);
+        }
+
+        repository.addRevenue(LocalDate.now(), invoice.getGrandTotal());
+        return invoice;
+    }
+
+    public Map<String, Double> calculateOccupancyRateByRoomType() {
+        Map<String, Integer> total = new LinkedHashMap<>();
+        Map<String, Integer> occ = new LinkedHashMap<>();
+        for (Room r : repository.findAllRooms()) {
+            total.merge(r.getRoomTypeName(), 1, Integer::sum);
+            if (r.getStatus() == RoomStatus.OCCUPIED) occ.merge(r.getRoomTypeName(), 1, Integer::sum);
+        }
+        Map<String, Double> rates = new LinkedHashMap<>();
+        for (String type : total.keySet()) {
+            rates.put(type, occ.getOrDefault(type, 0) * 100.0 / total.get(type));
+        }
+        return rates;
+    }
+
+    public Map<LocalDate, Double> getRevenueLast14Days() { return repository.getRevenueLast14Days(); }
+}
+
+class DataFileManager {
+    public static void exportBookingsToCsv(List<Booking> bookings, PricingPolicy policy, java.nio.file.Path path) throws IOException {
+        try (BufferedWriter w = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
+            w.write('\ufeff');
+            w.write("Mã ĐP,Phòng,Hạng Phòng,Số Khách,Khách Đại Diện & Đi Cùng,Giới Tính,CCCD Chính,SĐT Chính,Check-In,Check-Out,Số Đêm,Thành Tiền,Trạng Thái\n");
+            for (Booking b : bookings) {
+                Guest p = b.getPrimaryGuest();
+                w.write(String.format("%s,%s,%s,%d,\"%s\",\"%s\",%s,%s,%s,%s,%d,%.0f,%s\n",
+                        b.getBookingId(), b.getRoom().getRoomNumber(), b.getRoom().getRoomTypeName(),
+                        b.getGuests().size(), b.getGuestsSummary(), b.getAllGendersSummary(),
+                        p.getCccd(), p.getPhone(),
+                        b.getCheckIn(), b.getCheckOut(), b.nights(), b.totalCost(policy),
+                        b.isCheckedOut() ? "Đã Check-out" : "Đang lưu trú"));
+            }
+        }
+    }
+}
+
+/* ============================================================================
+ * PHẦN 6 - THÀNH VIÊN 6: Sơ đồ phòng 2D ĐỘNG (Tự động co giãn theo số Tầng & Phòng)
+ * ============================================================================ */
+class RoomMapPanel extends JPanel {
+    private final List<Room> rooms;
+    private final Consumer<Room> onRoomSelected;
+    private final Map<Room, Rectangle> roomRects = new HashMap<>();
+    private Room selectedRoom;
+
+    private static final Color COLOR_AVAILABLE = new Color(46, 204, 113);
+    private static final Color COLOR_OCCUPIED = new Color(231, 76, 60);
+    private static final Color COLOR_MAINTENANCE = new Color(241, 196, 15);
+    private static final Color COLOR_CLEANING_BADGE = new Color(41, 128, 185);
+
+    public RoomMapPanel(List<Room> rooms, Consumer<Room> onRoomSelected) {
+        this.rooms = rooms;
+        this.onRoomSelected = onRoomSelected;
+        setBackground(Color.WHITE);
+
+        addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                for (Map.Entry<Room, Rectangle> entry : roomRects.entrySet()) {
+                    if (entry.getValue().contains(e.getPoint())) {
+                        selectedRoom = entry.getKey();
+                        repaint();
+                        if (onRoomSelected != null) onRoomSelected.accept(selectedRoom);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    public Room getSelectedRoom() { return selectedRoom; }
+    public void setSelectedRoom(Room room) { this.selectedRoom = room; repaint(); }
+
+    private Map<Integer, List<Room>> groupRoomsByFloorDescending() {
+        Map<Integer, List<Room>> map = new TreeMap<>(Collections.reverseOrder());
+        for (Room r : rooms) {
+            map.computeIfAbsent(r.getFloor(), k -> new ArrayList<>()).add(r);
+        }
+        return map;
+    }
+
+    @Override
+    public Dimension getPreferredSize() {
+        Map<Integer, List<Room>> byFloor = groupRoomsByFloorDescending();
+        int rows = Math.max(4, byFloor.size());
+        int cols = byFloor.values().stream().mapToInt(List::size).max().orElse(6);
+        int prefW = Math.max(780, 80 + cols * 122);
+        int prefH = Math.max(380, 60 + rows * 82);
+        return new Dimension(prefW, prefH);
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        roomRects.clear();
+        drawLegend(g2, 16, 14);
+
+        Map<Integer, List<Room>> byFloor = groupRoomsByFloorDescending();
+        if (byFloor.isEmpty()) {
+            g2.dispose();
+            return;
+        }
+
+        int topOffset = 46, leftWidth = 76, gap = 12;
+        int rows = byFloor.size();
+        int maxCols = byFloor.values().stream().mapToInt(List::size).max().orElse(6);
+
+        int availW = getWidth() - leftWidth - 20;
+        int availH = getHeight() - topOffset - 15;
+        int cellW = Math.max(92, (availW - (maxCols - 1) * gap) / Math.max(1, maxCols));
+        int cellH = Math.max(64, (availH - (rows - 1) * gap) / Math.max(1, rows));
+        NumberFormat vnd = NumberFormat.getNumberInstance(HotelBookingApp.VI_LOCALE);
+
+        int rowIdx = 0;
+        for (Map.Entry<Integer, List<Room>> floorEntry : byFloor.entrySet()) {
+            int floorNo = floorEntry.getKey();
+            List<Room> floorRooms = floorEntry.getValue();
+            int y = topOffset + rowIdx * (cellH + gap);
+
+            // Vẽ nhãn Tầng ở đầu hàng
+            g2.setColor(new Color(44, 62, 80));
+            g2.setFont(new Font("Segoe UI", Font.BOLD, 13));
+            g2.drawString("Tầng " + floorNo, 12, y + cellH / 2 + 5);
+
+            for (int colIdx = 0; colIdx < floorRooms.size(); colIdx++) {
+                Room room = floorRooms.get(colIdx);
+                int x = leftWidth + colIdx * (cellW + gap);
+
+                roomRects.put(room, new Rectangle(x, y, cellW, cellH));
+                g2.setColor(room.getStatus() == RoomStatus.AVAILABLE ? COLOR_AVAILABLE :
+                        room.getStatus() == RoomStatus.OCCUPIED ? COLOR_OCCUPIED : COLOR_MAINTENANCE);
+                g2.fillRoundRect(x, y, cellW, cellH, 14, 14);
+
+                if (room.equals(selectedRoom)) {
+                    g2.setColor(new Color(25, 42, 86));
+                    g2.setStroke(new BasicStroke(3.5f));
+                } else {
+                    g2.setColor(Color.DARK_GRAY);
+                    g2.setStroke(new BasicStroke(1.2f));
+                }
+                g2.drawRoundRect(x, y, cellW, cellH, 14, 14);
+
+                g2.setColor(Color.WHITE);
+                g2.setFont(new Font("Segoe UI", Font.BOLD, 14));
+                g2.drawString("P." + room.getRoomNumber(), x + 9, y + 20);
+                g2.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+                g2.drawString(room.getRoomTypeName(), x + 9, y + 35);
+                g2.setFont(new Font("Segoe UI", Font.ITALIC, 11));
+                g2.drawString(vnd.format(room.getPricePerNight() / 1000) + "k/đêm", x + 9, y + 49);
+
+                if (room.isCleaningRequested()) {
+                    int badgeW = cellW - 12;
+                    int badgeH = 15;
+                    int bx = x + 6;
+                    int by = y + cellH - badgeH - 4;
+                    g2.setColor(COLOR_CLEANING_BADGE);
+                    g2.fillRoundRect(bx, by, badgeW, badgeH, 6, 6);
+                    g2.setColor(Color.WHITE);
+                    g2.setFont(new Font("Segoe UI", Font.BOLD, 9));
+                    String tag = "CẦN DỌN PHÒNG";
+                    g2.drawString(tag, bx + (badgeW - g2.getFontMetrics().stringWidth(tag)) / 2, by + 11);
+                }
+            }
+            rowIdx++;
+        }
+        g2.dispose();
+    }
+
+    private void drawLegend(Graphics2D g2, int x, int y) {
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        Object[][] items = {
+                {COLOR_AVAILABLE, "Trống (Available)"},
+                {COLOR_OCCUPIED, "Đang có khách (Occupied)"},
+                {COLOR_MAINTENANCE, "Bảo trì (Maintenance)"},
+                {COLOR_CLEANING_BADGE, "Yêu cầu dọn phòng"}
+        };
+        int curX = x;
+        for (Object[] it : items) {
+            g2.setColor((Color) it[0]);
+            g2.fillRoundRect(curX, y, 16, 16, 5, 5);
+            g2.setColor(Color.DARK_GRAY);
+            g2.drawString((String) it[1], curX + 22, y + 13);
+            curX += 172;
+        }
+    }
+}
+
+class RoomDetailPanel extends JPanel {
+    private final JLabel lblRoomNo = new JLabel("-");
+    private final JLabel lblType = new JLabel("-");
+    private final JLabel lblFloor = new JLabel("-");
+    private final JLabel lblStatus = new JLabel("-");
+    private final JLabel lblCleaning = new JLabel("-");
+    private final JLabel lblBasePrice = new JLabel("-");
+    private final JLabel lblPolicyPrice = new JLabel("-");
+    private final JTextArea txtAmenitiesAndGuests = new JTextArea(5, 20);
+    private final JButton btnToggleCleaning;
+
+    public RoomDetailPanel(Runnable onBook, Runnable onToggleCleaning, Runnable onMaint) {
+        setLayout(new BorderLayout(6, 6));
+        setBorder(BorderFactory.createTitledBorder("Chi tiết Phòng đang chọn"));
+        setPreferredSize(new Dimension(370, 340));
+
+        JPanel grid = new JPanel(new GridLayout(7, 2, 6, 6));
+        grid.setBorder(new EmptyBorder(6, 12, 6, 12));
+        Font bold = new Font("Segoe UI", Font.BOLD, 13);
+        lblRoomNo.setFont(bold);
+        lblCleaning.setFont(bold);
+        lblPolicyPrice.setFont(bold);
+        lblPolicyPrice.setForeground(new Color(192, 57, 43));
+
+        grid.add(new JLabel("Số phòng:"));              grid.add(lblRoomNo);
+        grid.add(new JLabel("Hạng phòng:"));            grid.add(lblType);
+        grid.add(new JLabel("Tầng:"));                  grid.add(lblFloor);
+        grid.add(new JLabel("Trạng thái:"));            grid.add(lblStatus);
+        grid.add(new JLabel("Yêu cầu dọn phòng:"));     grid.add(lblCleaning);
+        grid.add(new JLabel("Giá gốc niêm yết:"));      grid.add(lblBasePrice);
+        grid.add(new JLabel("Giá theo CS hiện tại:"));  grid.add(lblPolicyPrice);
+
+        txtAmenitiesAndGuests.setLineWrap(true);
+        txtAmenitiesAndGuests.setWrapStyleWord(true);
+        txtAmenitiesAndGuests.setEditable(false);
+        txtAmenitiesAndGuests.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        JScrollPane scroll = new JScrollPane(txtAmenitiesAndGuests);
+        scroll.setBorder(BorderFactory.createTitledBorder("Tiện nghi & Khách đang lưu trú trong phòng"));
+
+        JPanel btns = new JPanel(new GridLayout(3, 1, 5, 5));
+        btns.setBorder(new EmptyBorder(4, 10, 8, 10));
+
+        JButton btnBook = new JButton("Đặt phòng này ngay");
+        btnBook.setFont(bold);
+        btnBook.addActionListener(e -> onBook.run());
+
+        btnToggleCleaning = new JButton("Yêu cầu Dọn phòng / Hoàn tất dọn");
+        btnToggleCleaning.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnToggleCleaning.setForeground(new Color(25, 80, 150));
+        btnToggleCleaning.addActionListener(e -> onToggleCleaning.run());
+
+        JButton btnMaint = new JButton("Đổi trạng thái Bảo trì / Trống");
+        btnMaint.addActionListener(e -> onMaint.run());
+
+        btns.add(btnBook);
+        btns.add(btnToggleCleaning);
+        btns.add(btnMaint);
+
+        add(grid, BorderLayout.NORTH);
+        add(scroll, BorderLayout.CENTER);
+        add(btns, BorderLayout.SOUTH);
+    }
+
+    public void displayRoom(Room room, PricingPolicy policy, Booking activeBooking) {
+        if (room == null) return;
+        NumberFormat vnd = NumberFormat.getCurrencyInstance(HotelBookingApp.VI_LOCALE);
+        lblRoomNo.setText("Phòng " + room.getRoomNumber());
+        lblType.setText(room.getRoomTypeName() + " (Tối đa " + room.getMaxOccupancy() + " khách)");
+        lblFloor.setText("Tầng " + room.getFloor());
+        lblStatus.setText(room.getStatus().getDisplayName());
+
+        if (room.isCleaningRequested()) {
+            lblCleaning.setText("Đang yêu cầu dọn phòng!");
+            lblCleaning.setForeground(new Color(41, 128, 185));
+            btnToggleCleaning.setText("Xác nhận Đã dọn phòng xong");
+        } else {
+            lblCleaning.setText("Đã dọn sạch sẽ");
+            lblCleaning.setForeground(new Color(39, 174, 96));
+            btnToggleCleaning.setText("Gửi Yêu cầu Dọn phòng");
+        }
+
+        lblBasePrice.setText(vnd.format(room.getPricePerNight()) + " / đêm");
+        lblPolicyPrice.setText(vnd.format(policy.calculatePrice(room, 1)) + " / đêm");
+
+        StringBuilder info = new StringBuilder();
+        info.append("• Tiện nghi: ").append(room.getAmenities()).append("\n");
+        if (activeBooking != null) {
+            info.append("• Đoàn khách đang ở (").append(activeBooking.getGuests().size()).append(" người):\n");
+            int idx = 1;
+            for (Guest g : activeBooking.getGuests()) {
+                info.append("   ").append(idx++).append(". ").append(g.getName())
+                    .append(" (").append(g.getGender().getLabel())
+                    .append(" - CCCD: ").append(g.getCccd()).append(")\n");
+            }
+        } else {
+            info.append("• Hiện chưa có khách lưu trú.");
+        }
+        txtAmenitiesAndGuests.setText(info.toString());
+        txtAmenitiesAndGuests.setCaretPosition(0);
+    }
+}
+
+/* ============================================================================
+ * HỘP THOẠI MỚI: THÊM PHÒNG LẺ HOẶC THÊM TẦNG MỚI HÀNG LOẠT (AddRoomFloorDialog)
+ * ============================================================================ */
+class AddRoomFloorDialog extends JDialog {
+    private final BookingService bookingService;
+    private boolean changed = false;
+    private Room lastAddedRoom;
+    private String actionSummaryMessage = "";
+
+    public AddRoomFloorDialog(JFrame parent, BookingService bookingService, int selectedFloor, int initialTab) {
+        super(parent, "Quản lý Mở rộng Khách sạn: Thêm Phòng & Thêm Tầng - Nhóm8HotelBooking", true);
+        this.bookingService = bookingService;
+        setSize(540, 400);
+        setLocationRelativeTo(parent);
+        setLayout(new BorderLayout(8, 8));
+
+        JTabbedPane tabbedPane = new JTabbedPane();
+        tabbedPane.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        tabbedPane.addTab("1. Thêm Phòng mới vào Tầng", createAddSingleRoomPanel(selectedFloor));
+        tabbedPane.addTab("2. Thêm Tầng mới (Tạo hàng loạt phòng)", createAddFloorPanel());
+
+        if (initialTab >= 0 && initialTab < tabbedPane.getTabCount()) {
+            tabbedPane.setSelectedIndex(initialTab);
+        }
+
+        add(tabbedPane, BorderLayout.CENTER);
+    }
+
+    private JPanel createAddSingleRoomPanel(int defaultFloor) {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(new EmptyBorder(14, 16, 12, 16));
+
+        JPanel form = new JPanel(new GridLayout(6, 2, 8, 10));
+
+        List<Integer> floors = bookingService.getExistingFloors();
+        JComboBox<Integer> cboFloor = new JComboBox<>(floors.toArray(new Integer[0]));
+        cboFloor.setSelectedItem(defaultFloor);
+
+        JTextField txtRoomNo = new JTextField(bookingService.suggestNextRoomNumber(defaultFloor));
+        txtRoomNo.setFont(new Font("Segoe UI", Font.BOLD, 13));
+
+        JComboBox<String> cboType = new JComboBox<>(new String[]{"Standard", "Deluxe", "Suite"});
+        JSpinner spnBeds = new JSpinner(new SpinnerNumberModel(2, 1, 4, 1));
+        JComboBox<String> cboView = new JComboBox<>(new String[]{"Hướng Biển", "Hướng Thành phố", "Hướng Hồ bơi"});
+        JCheckBox chkJacuzzi = new JCheckBox("Trang bị bể sục Jacuzzi VIP", true);
+
+        cboFloor.addActionListener(e -> {
+            Integer fl = (Integer) cboFloor.getSelectedItem();
+            if (fl != null) {
+                txtRoomNo.setText(bookingService.suggestNextRoomNumber(fl));
+            }
+        });
+
+        form.add(new JLabel("Chọn Tầng muốn thêm phòng:"));  form.add(cboFloor);
+        form.add(new JLabel("Số phòng mới (tự động gợi ý):")); form.add(txtRoomNo);
+        form.add(new JLabel("Chọn Hạng phòng:"));            form.add(cboType);
+        form.add(new JLabel("Số giường (nếu là Standard):")); form.add(spnBeds);
+        form.add(new JLabel("Hướng ban công (nếu là Deluxe):")); form.add(cboView);
+        form.add(new JLabel("Tiện ích VIP (nếu là Suite):")); form.add(chkJacuzzi);
+
+        JPanel btnBar = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton btnAddRoom = new JButton("Xác nhận Thêm Phòng");
+        btnAddRoom.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnAddRoom.setForeground(new Color(22, 160, 133));
+        JButton btnClose = new JButton("Đóng");
+
+        btnAddRoom.addActionListener(e -> {
+            try {
+                int fl = (Integer) cboFloor.getSelectedItem();
+                String roomNo = txtRoomNo.getText();
+                String type = (String) cboType.getSelectedItem();
+                int beds = (Integer) spnBeds.getValue();
+                String view = (String) cboView.getSelectedItem();
+                boolean jacuzzi = chkJacuzzi.isSelected();
+
+                lastAddedRoom = bookingService.addSingleRoom(roomNo, fl, type, beds, view, jacuzzi);
+                changed = true;
+                actionSummaryMessage = "Đã thêm thành công Phòng " + lastAddedRoom.getRoomNumber()
+                        + " (" + lastAddedRoom.getRoomTypeName() + ") vào Tầng " + fl + "!";
+                JOptionPane.showMessageDialog(this, actionSummaryMessage, "Thêm Phòng thành công", JOptionPane.INFORMATION_MESSAGE);
+                dispose();
+            } catch (InvalidBookingDataException ex) {
+                JOptionPane.showMessageDialog(this, ex.getMessage(), "Lỗi dữ liệu", JOptionPane.WARNING_MESSAGE);
+            }
+        });
+        btnClose.addActionListener(e -> dispose());
+
+        btnBar.add(btnAddRoom);
+        btnBar.add(btnClose);
+
+        panel.add(form, BorderLayout.CENTER);
+        panel.add(btnBar, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JPanel createAddFloorPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(new EmptyBorder(14, 16, 12, 16));
+
+        int nextFloor = bookingService.getNextNewFloorNumber();
+        JPanel form = new JPanel(new GridLayout(5, 2, 8, 12));
+
+        JSpinner spnNewFloor = new JSpinner(new SpinnerNumberModel(nextFloor, 1, 30, 1));
+        spnNewFloor.setFont(new Font("Segoe UI", Font.BOLD, 13));
+
+        JSpinner spnRoomCount = new JSpinner(new SpinnerNumberModel(6, 1, 12, 1));
+        JComboBox<String> cboFloorType = new JComboBox<>(new String[]{
+                "Hỗn hợp (Standard + Deluxe + Suite)",
+                "Standard",
+                "Deluxe",
+                "Suite"
+        });
+        JLabel lblPreview = new JLabel();
+        lblPreview.setForeground(new Color(41, 128, 185));
+        lblPreview.setFont(new Font("Segoe UI", Font.ITALIC, 12));
+
+        Runnable updatePreview = () -> {
+            int fl = (Integer) spnNewFloor.getValue();
+            int cnt = (Integer) spnRoomCount.getValue();
+            lblPreview.setText(String.format("Sẽ tự động tạo %d phòng: từ P.%d01 đến P.%d%02d", cnt, fl, fl, cnt));
+        };
+        spnNewFloor.addChangeListener(e -> updatePreview.run());
+        spnRoomCount.addChangeListener(e -> updatePreview.run());
+        updatePreview.run();
+
+        form.add(new JLabel("Số thứ tự Tầng mới cần xây:"));  form.add(spnNewFloor);
+        form.add(new JLabel("Số lượng phòng trên Tầng mới:")); form.add(spnRoomCount);
+        form.add(new JLabel("Cấu hình Hạng phòng:"));         form.add(cboFloorType);
+        form.add(new JLabel("Dự kiến các phòng được tạo:"));  form.add(lblPreview);
+
+        JPanel btnBar = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton btnAddFloor = new JButton("Xác nhận Xây Thêm Tầng");
+        btnAddFloor.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnAddFloor.setForeground(new Color(41, 128, 185));
+        JButton btnClose = new JButton("Đóng");
+
+        btnAddFloor.addActionListener(e -> {
+            try {
+                int fl = (Integer) spnNewFloor.getValue();
+                int cnt = (Integer) spnRoomCount.getValue();
+                String opt = (String) cboFloorType.getSelectedItem();
+
+                List<Room> created = bookingService.addNewFloor(fl, cnt, opt);
+                if (!created.isEmpty()) {
+                    lastAddedRoom = created.get(0);
+                }
+                changed = true;
+                actionSummaryMessage = "Đã xây thêm Tầng " + fl + " với " + created.size() + " phòng mới thành công!";
+                JOptionPane.showMessageDialog(this, actionSummaryMessage, "Thêm Tầng thành công", JOptionPane.INFORMATION_MESSAGE);
+                dispose();
+            } catch (InvalidBookingDataException ex) {
+                JOptionPane.showMessageDialog(this, ex.getMessage(), "Lỗi dữ liệu", JOptionPane.WARNING_MESSAGE);
+            }
+        });
+        btnClose.addActionListener(e -> dispose());
+
+        btnBar.add(btnAddFloor);
+        btnBar.add(btnClose);
+
+        panel.add(form, BorderLayout.CENTER);
+        panel.add(btnBar, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    public boolean isChanged() { return changed; }
+    public Room getLastAddedRoom() { return lastAddedRoom; }
+    public String getActionSummaryMessage() { return actionSummaryMessage; }
+}
+
+/* ============================================================================
+ * PHẦN 7 - THÀNH VIÊN 7: BookingDialog (Hỗ trợ nhiều khách + Chọn Giới tính + Yêu cầu dọn phòng)
+ * ============================================================================ */
+class BookingTableModel extends AbstractTableModel {
+    private final String[] cols = {
+            "Mã ĐP", "Phòng", "Khách lưu trú", "Số khách", "Giới tính",
+            "CCCD đại diện", "SĐT", "Check-in", "Check-out", "Số đêm", "Tiền phòng (VNĐ)", "Trạng thái"
+    };
+    private final List<Booking> bookings;
+    private final BookingService service;
+    private final DateTimeFormatter df = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+    private final NumberFormat vnd = NumberFormat.getNumberInstance(HotelBookingApp.VI_LOCALE);
+
+    public BookingTableModel(List<Booking> bookings, BookingService service) {
+        this.bookings = bookings;
+        this.service = service;
+    }
+
+    @Override public int getRowCount() { return bookings.size(); }
+    @Override public int getColumnCount() { return cols.length; }
+    @Override public String getColumnName(int c) { return cols[c]; }
+
+    @Override
+    public Object getValueAt(int r, int c) {
+        Booking b = bookings.get(r);
+        Guest p = b.getPrimaryGuest();
+        switch (c) {
+            case 0: return b.getBookingId();
+            case 1: return "P." + b.getRoom().getRoomNumber() + " (" + b.getRoom().getRoomTypeName() + ")";
+            case 2: return b.getGuestsSummary();
+            case 3: return b.getGuests().size() + " người";
+            case 4: return b.getAllGendersSummary();
+            case 5: return p.getCccd();
+            case 6: return p.getPhone();
+            case 7: return b.getCheckIn().format(df);
+            case 8: return b.getCheckOut().format(df);
+            case 9: return b.nights();
+            case 10: return vnd.format(b.totalCost(service.getPricingPolicy()));
+            default: return b.isCheckedOut() ? "Đã Check-out" : "Đang lưu trú";
+        }
+    }
+
+    public Booking getBookingAt(int row) { return bookings.get(row); }
+}
+
+class BookingStatusCellRenderer extends DefaultTableCellRenderer {
+    @Override
+    public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
+        Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+        if (!isSelected) {
+            int modelRow = table.convertRowIndexToModel(row);
+            String status = String.valueOf(table.getModel().getValueAt(modelRow, 11));
+            c.setBackground("Đã Check-out".equals(status) ? new Color(235, 245, 238) : new Color(255, 248, 240));
+        }
+        return c;
+    }
+}
+
+class BookingDialog extends JDialog {
+    private final BookingService bookingService;
+    private final JComboBox<Room> cboRoom;
+    private final JTextField txtName = new JTextField();
+    private final JComboBox<Gender> cboGender = new JComboBox<>(Gender.values());
+    private final JTextField txtCccd = new JTextField();
+    private final JTextField txtPhone = new JTextField();
+    private final JSpinner spnIn;
+    private final JSpinner spnOut;
+    private final JCheckBox chkCleaningRequest = new JCheckBox("Yêu cầu dọn phòng trước / trong khi nhận phòng");
+    private final JLabel lblNights = new JLabel("3 đêm");
+    private final JLabel lblCost = new JLabel("0 VNĐ");
+
+    private final List<Guest> addedGuests = new ArrayList<>();
+    private final DefaultTableModel guestTableModel;
+    private final JTable guestTable;
+
+    private boolean confirmed = false;
+    private Booking createdBooking;
+
+    public BookingDialog(JFrame parent, BookingService service, Room preselected) {
+        super(parent, "Đặt phòng Khách sạn (Hỗ trợ 1 hoặc nhiều người ở) - Nhóm8HotelBooking", true);
+        this.bookingService = service;
+        setSize(660, 650);
+        setLocationRelativeTo(parent);
+        setLayout(new BorderLayout(8, 8));
+
+        JPanel topForm = new JPanel(new GridLayout(5, 2, 8, 8));
+        topForm.setBorder(BorderFactory.createTitledBorder("1. Thông tin Phòng & Nhập thông tin từng Khách hàng"));
+
+        cboRoom = new JComboBox<>(service.getAllRooms().toArray(new Room[0]));
+        if (preselected != null) {
+            cboRoom.setSelectedItem(preselected);
+            chkCleaningRequest.setSelected(preselected.isCleaningRequested());
+        }
+
+        topForm.add(new JLabel("Chọn phòng:"));                topForm.add(cboRoom);
+        topForm.add(new JLabel("Họ và tên khách:"));           topForm.add(txtName);
+        topForm.add(new JLabel("Giới tính:"));                 topForm.add(cboGender);
+        topForm.add(new JLabel("Số CCCD (9-12 số):"));         topForm.add(txtCccd);
+        topForm.add(new JLabel("Số điện thoại (10 số):"));     topForm.add(txtPhone);
+
+        JPanel guestListPanel = new JPanel(new BorderLayout(6, 6));
+        guestListPanel.setBorder(BorderFactory.createTitledBorder(
+                "2. Danh sách Khách cùng lưu trú (Đi 2+ người: Bấm '+ Thêm người vào danh sách' cho từng người)"));
+
+        JPanel guestBtnBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        JButton btnAddGuest = new JButton("+ Thêm người vào danh sách ở cùng");
+        btnAddGuest.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnAddGuest.setForeground(new Color(39, 174, 96));
+        JButton btnRemoveGuest = new JButton("Xóa người đang chọn");
+
+        btnAddGuest.addActionListener(e -> addCurrentGuestToList());
+        btnRemoveGuest.addActionListener(e -> removeSelectedGuest());
+        guestBtnBar.add(btnAddGuest);
+        guestBtnBar.add(btnRemoveGuest);
+
+        guestTableModel = new DefaultTableModel(new String[]{"STT", "Họ và tên khách", "Giới tính", "Số CCCD", "Số điện thoại"}, 0) {
+            @Override public boolean isCellEditable(int row, int column) { return false; }
+        };
+        guestTable = new JTable(guestTableModel);
+        guestTable.setRowHeight(24);
+        JScrollPane guestScroll = new JScrollPane(guestTable);
+        guestScroll.setPreferredSize(new Dimension(600, 125));
+
+        guestListPanel.add(guestBtnBar, BorderLayout.NORTH);
+        guestListPanel.add(guestScroll, BorderLayout.CENTER);
+
+        JPanel bottomSection = new JPanel(new BorderLayout(6, 6));
+        JPanel dateGrid = new JPanel(new GridLayout(5, 2, 8, 8));
+        dateGrid.setBorder(BorderFactory.createTitledBorder("3. Thời gian lưu trú & Tùy chọn Dọn phòng"));
+
+        Date now = new Date();
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(now);
+        cal.add(Calendar.DAY_OF_MONTH, 3);
+
+        spnIn = new JSpinner(new SpinnerDateModel(now, null, null, Calendar.DAY_OF_MONTH));
+        spnIn.setEditor(new JSpinner.DateEditor(spnIn, "dd/MM/yyyy"));
+
+        spnOut = new JSpinner(new SpinnerDateModel(cal.getTime(), null, null, Calendar.DAY_OF_MONTH));
+        spnOut.setEditor(new JSpinner.DateEditor(spnOut, "dd/MM/yyyy"));
+
+        lblNights.setFont(new Font("Segoe UI", Font.BOLD, 13));
+        lblCost.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        lblCost.setForeground(new Color(192, 57, 43));
+
+        ChangeListener cl = e -> updateLiveCost();
+        spnIn.addChangeListener(cl);
+        spnOut.addChangeListener(cl);
+        cboRoom.addActionListener(e -> updateLiveCost());
+
+        dateGrid.add(new JLabel("Ngày Check-in:"));         dateGrid.add(spnIn);
+        dateGrid.add(new JLabel("Ngày Check-out:"));        dateGrid.add(spnOut);
+        dateGrid.add(new JLabel("Dịch vụ buồng phòng:"));   dateGrid.add(chkCleaningRequest);
+        dateGrid.add(new JLabel("Số đêm lưu trú:"));        dateGrid.add(lblNights);
+        dateGrid.add(new JLabel("Tổng tiền dự kiến:"));     dateGrid.add(lblCost);
+
+        JPanel actionBtns = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 6));
+        JButton btnOk = new JButton("Xác nhận Đặt phòng");
+        btnOk.setFont(new Font("Segoe UI", Font.BOLD, 13));
+        JButton btnCancel = new JButton("Hủy");
+        btnOk.addActionListener(e -> confirm());
+        btnCancel.addActionListener(e -> dispose());
+        actionBtns.add(btnOk);
+        actionBtns.add(btnCancel);
+
+        bottomSection.add(dateGrid, BorderLayout.CENTER);
+        bottomSection.add(actionBtns, BorderLayout.SOUTH);
+
+        JPanel mainContent = new JPanel(new BorderLayout(8, 8));
+        mainContent.setBorder(new EmptyBorder(8, 12, 8, 12));
+        mainContent.add(topForm, BorderLayout.NORTH);
+        mainContent.add(guestListPanel, BorderLayout.CENTER);
+        mainContent.add(bottomSection, BorderLayout.SOUTH);
+
+        add(mainContent, BorderLayout.CENTER);
+        updateLiveCost();
+    }
+
+    private void addCurrentGuestToList() {
+        try {
+            Room r = (Room) cboRoom.getSelectedItem();
+            if (r != null && addedGuests.size() >= r.getMaxOccupancy()) {
+                JOptionPane.showMessageDialog(this,
+                        "Hạng phòng " + r.getRoomTypeName() + " chỉ cho phép tối đa " + r.getMaxOccupancy() + " người ở!",
+                        "Vượt số người tối đa", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            Guest g = new Guest(
+                    txtCccd.getText(),
+                    txtName.getText(),
+                    (Gender) cboGender.getSelectedItem(),
+                    txtPhone.getText()
+            );
+            addedGuests.add(g);
+            refreshGuestTable();
+            txtName.setText("");
+            txtCccd.setText("");
+            txtName.requestFocus();
+        } catch (InvalidBookingDataException ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Thông tin khách chưa hợp lệ", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    private void removeSelectedGuest() {
+        int row = guestTable.getSelectedRow();
+        if (row >= 0 && row < addedGuests.size()) {
+            addedGuests.remove(row);
+            refreshGuestTable();
+        }
+    }
+
+    private void refreshGuestTable() {
+        guestTableModel.setRowCount(0);
+        for (int i = 0; i < addedGuests.size(); i++) {
+            Guest g = addedGuests.get(i);
+            guestTableModel.addRow(new Object[]{
+                    i + 1, g.getName(), g.getGender().getLabel(), g.getCccd(), g.getPhone()
+            });
+        }
+    }
+
+    private LocalDate toLocalDate(JSpinner spn) {
+        return ((Date) spn.getValue()).toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+    }
+
+    private void updateLiveCost() {
+        long nights = ChronoUnit.DAYS.between(toLocalDate(spnIn), toLocalDate(spnOut));
+        Room r = (Room) cboRoom.getSelectedItem();
+        if (nights <= 0 || r == null) {
+            lblNights.setText("Ngày không hợp lệ (<= 0 đêm)");
+            lblCost.setText("0 VNĐ");
+        } else {
+            lblNights.setText(nights + " đêm");
+            double cost = bookingService.getPricingPolicy().calculatePrice(r, nights);
+            lblCost.setText(NumberFormat.getCurrencyInstance(HotelBookingApp.VI_LOCALE).format(cost));
+        }
+    }
+
+    private void confirm() {
+        try {
+            if (!txtName.getText().trim().isEmpty() || !txtCccd.getText().trim().isEmpty() || addedGuests.isEmpty()) {
+                if (!txtName.getText().trim().isEmpty() || addedGuests.isEmpty()) {
+                    Guest g = new Guest(
+                            txtCccd.getText(),
+                            txtName.getText(),
+                            (Gender) cboGender.getSelectedItem(),
+                            txtPhone.getText()
+                    );
+                    addedGuests.add(g);
+                    refreshGuestTable();
+                    txtName.setText("");
+                    txtCccd.setText("");
+                }
+            }
+
+            Room r = (Room) cboRoom.getSelectedItem();
+            if (r != null && addedGuests.size() > r.getMaxOccupancy()) {
+                throw new InvalidBookingDataException("Số khách (" + addedGuests.size()
+                        + " người) vượt quá sức chứa tối đa của phòng (" + r.getMaxOccupancy() + " người)!");
+            }
+
+            createdBooking = bookingService.createBooking(
+                    addedGuests, r, toLocalDate(spnIn), toLocalDate(spnOut), chkCleaningRequest.isSelected());
+            confirmed = true;
+            JOptionPane.showMessageDialog(this,
+                    "Đặt phòng thành công!\nMã ĐP: " + createdBooking.getBookingId()
+                            + "\nSố lượng khách: " + createdBooking.getGuests().size() + " người",
+                    "Thành công", JOptionPane.INFORMATION_MESSAGE);
+            dispose();
+        } catch (RoomNotAvailableException ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Lỗi Trùng lịch Đặt phòng", JOptionPane.ERROR_MESSAGE);
+        } catch (InvalidBookingDataException ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Dữ liệu không hợp lệ", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    public boolean isConfirmed() { return confirmed; }
+    public Booking getCreatedBooking() { return createdBooking; }
+}
+
+/* ============================================================================
+ * PHẦN 8 - THÀNH VIÊN 8: HÓA ĐƠN ĐỒ HỌA THỰC TẾ (HIỂN THỊ ĐỦ DANH SÁCH KHÁCH & MỘC ĐỎ)
+ * ============================================================================ */
+class InvoiceDialog extends JDialog {
+    private final Booking booking;
+    private final BookingService service;
+    private final JCheckBox chkMinibar;
+    private final JCheckBox chkLaundry;
+    private final JCheckBox chkBreakfast;
+    private final JCheckBox chkSpa;
+    private final InvoicePaperPanel invoicePaperPanel;
+    private boolean paid = false;
+
+    public InvoiceDialog(JFrame parent, Booking booking, BookingService service) {
+        super(parent, "Check-out & Hóa đơn Đỏ - Phòng " + booking.getRoom().getRoomNumber() + " | Nhóm8HotelBooking", true);
+        this.booking = booking;
+        this.service = service;
+        setSize(760, 750);
+        setLocationRelativeTo(parent);
+        setLayout(new BorderLayout(8, 8));
+
+        chkMinibar = new JCheckBox("Minibar (Đồ uống & Snack) - 150.000đ");
+        chkLaundry = new JCheckBox("Giặt ủi cao cấp - 120.000đ");
+        chkBreakfast = new JCheckBox("Buffet Sáng phụ thêm - 200.000đ");
+        chkSpa = new JCheckBox("Dịch vụ Spa & Xông hơi - 350.000đ");
+
+        Font chkFont = new Font("Segoe UI", Font.BOLD, 12);
+        chkMinibar.setFont(chkFont);
+        chkLaundry.setFont(chkFont);
+        chkBreakfast.setFont(chkFont);
+        chkSpa.setFont(chkFont);
+
+        JPanel checks = new JPanel(new GridLayout(2, 2, 12, 8));
+        checks.setBorder(BorderFactory.createTitledBorder("Chọn phụ phí dịch vụ phát sinh (Tích chọn để in Hình ảnh Dịch vụ lên Hóa đơn)"));
+        ActionListener al = e -> refreshPreview();
+        chkMinibar.addActionListener(al);
+        chkLaundry.addActionListener(al);
+        chkBreakfast.addActionListener(al);
+        chkSpa.addActionListener(al);
+        checks.add(chkMinibar);
+        checks.add(chkLaundry);
+        checks.add(chkBreakfast);
+        checks.add(chkSpa);
+
+        invoicePaperPanel = new InvoicePaperPanel();
+        JScrollPane scrollPane = new JScrollPane(invoicePaperPanel);
+        scrollPane.getVerticalScrollBar().setUnitIncrement(16);
+        scrollPane.setBorder(BorderFactory.createTitledBorder("Bản xem trước Hóa đơn Giá trị Gia tăng (Có đóng dấu mộc đỏ Nhóm8HotelBooking)"));
+
+        JPanel btns = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 6));
+        JButton btnExportPng = new JButton("Xuất ảnh Hóa đơn (.PNG)");
+        JButton btnPay = new JButton("Xác nhận Thanh toán & Check-out");
+        btnPay.setFont(new Font("Segoe UI", Font.BOLD, 13));
+        btnPay.setForeground(new Color(180, 20, 20));
+        JButton btnClose = new JButton("Đóng");
+
+        btnExportPng.addActionListener(e -> exportInvoiceImage());
+        btnPay.addActionListener(e -> {
+            service.checkOut(booking, collectCharges());
+            paid = true;
+            JOptionPane.showMessageDialog(this,
+                    "Thanh toán & Đóng dấu hóa đơn thành công!\nPhòng " + booking.getRoom().getRoomNumber()
+                            + " đã chuyển về trạng thái Trống và bật cờ Cần dọn phòng.",
+                    "Hoàn tất Check-out", JOptionPane.INFORMATION_MESSAGE);
+            dispose();
+        });
+        btnClose.addActionListener(e -> dispose());
+
+        btns.add(btnExportPng);
+        btns.add(btnPay);
+        btns.add(btnClose);
+
+        add(checks, BorderLayout.NORTH);
+        add(scrollPane, BorderLayout.CENTER);
+        add(btns, BorderLayout.SOUTH);
+
+        refreshPreview();
+    }
+
+    private List<ServiceCharge> collectCharges() {
+        List<ServiceCharge> list = new ArrayList<>();
+        if (chkMinibar.isSelected())
+            list.add(new ServiceCharge("Minibar (Đồ uống & Snack)", 150_000, ServiceType.MINIBAR));
+        if (chkLaundry.isSelected())
+            list.add(new ServiceCharge("Giặt ủi cao cấp (24h)", 120_000, ServiceType.LAUNDRY));
+        if (chkBreakfast.isSelected())
+            list.add(new ServiceCharge("Buffet Sáng Á - Âu phụ thêm", 200_000, ServiceType.BREAKFAST));
+        if (chkSpa.isSelected())
+            list.add(new ServiceCharge("Dịch vụ Spa & Xông hơi thảo dược", 350_000, ServiceType.SPA));
+        return list;
+    }
+
+    private void refreshPreview() {
+        Invoice inv = new Invoice(booking, service.getPricingPolicy());
+        collectCharges().forEach(inv::addServiceCharge);
+        invoicePaperPanel.setInvoice(inv);
+    }
+
+    private void exportInvoiceImage() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setSelectedFile(new File("HoaDon_Nhom8HotelBooking_" + booking.getBookingId() + ".png"));
+        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            try {
+                BufferedImage img = new BufferedImage(
+                        invoicePaperPanel.getWidth(),
+                        invoicePaperPanel.getHeight(),
+                        BufferedImage.TYPE_INT_RGB);
+                Graphics2D g2 = img.createGraphics();
+                invoicePaperPanel.paint(g2);
+                g2.dispose();
+                ImageIO.write(img, "png", chooser.getSelectedFile());
+                JOptionPane.showMessageDialog(this, "Đã lưu ảnh Hóa đơn tại:\n" + chooser.getSelectedFile().getAbsolutePath());
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "Lỗi xuất ảnh: " + ex.getMessage());
+            }
+        }
+    }
+
+    public boolean isPaid() { return paid; }
+}
+
+class InvoicePaperPanel extends JPanel {
+    private Invoice invoice;
+
+    public InvoicePaperPanel() {
+        setBackground(new Color(228, 232, 238));
+    }
+
+    public void setInvoice(Invoice invoice) {
+        this.invoice = invoice;
+        int extraServiceCount = (invoice != null) ? invoice.getServiceCharges().size() : 0;
+        int extraGuestLines = (invoice != null) ? Math.max(0, invoice.getBooking().getGuests().size() - 1) : 0;
+        int dynamicHeight = 700 + extraGuestLines * 18 + extraServiceCount * 42 + (extraServiceCount > 0 ? 115 : 0);
+        setPreferredSize(new Dimension(680, dynamicHeight));
+        revalidate();
+        repaint();
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        if (invoice == null) return;
+
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+
+        int panelW = getWidth();
+        int paperW = 640;
+        int paperX = Math.max(15, (panelW - paperW) / 2);
+        int paperY = 16;
+        int paperH = getPreferredSize().height - 32;
+
+        g2.setColor(new Color(0, 0, 0, 35));
+        g2.fillRoundRect(paperX + 5, paperY + 6, paperW, paperH, 10, 10);
+        g2.setColor(new Color(255, 254, 250));
+        g2.fillRoundRect(paperX, paperY, paperW, paperH, 10, 10);
+        g2.setColor(new Color(180, 175, 165));
+        g2.setStroke(new BasicStroke(1.2f));
+        g2.drawRoundRect(paperX, paperY, paperW, paperH, 10, 10);
+
+        g2.setColor(new Color(25, 55, 109));
+        g2.fillRoundRect(paperX, paperY, paperW, 10, 10, 10);
+
+        int curY = paperY + 26;
+        int leftX = paperX + 28;
+        int rightX = paperX + paperW - 28;
+
+        drawHotelLogo(g2, leftX, curY);
+        g2.setColor(new Color(25, 55, 109));
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 17));
+        g2.drawString("CÔNG TY TNHH " + Invoice.COMPANY_NAME, leftX + 58, curY + 18);
+
+        g2.setColor(new Color(90, 95, 105));
+        g2.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+        g2.drawString("MST: 0108889999 - Đ/c: Học viện Công nghệ Bưu chính Viễn thông (PTIT)", leftX + 58, curY + 35);
+        g2.drawString("Hotline: 1900 8888 | Website: www.nhom8hotelbooking.vn", leftX + 58, curY + 50);
+
+        drawBarcode(g2, rightX - 115, curY + 4, invoice.getBooking().getBookingId());
+
+        curY += 68;
+        g2.setColor(new Color(210, 215, 220));
+        g2.drawLine(leftX, curY, rightX, curY);
+
+        curY += 28;
+        g2.setColor(new Color(185, 28, 28));
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 21));
+        String title = "HÓA ĐƠN THANH TOÁN DỊCH VỤ KHÁCH SẠN";
+        g2.drawString(title, paperX + (paperW - g2.getFontMetrics().stringWidth(title)) / 2, curY);
+
+        curY += 20;
+        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
+        g2.setColor(new Color(100, 100, 100));
+        g2.setFont(new Font("Segoe UI", Font.ITALIC, 12));
+        String subTitle = "Số HĐ: " + invoice.getBooking().getBookingId() + "   |   Ngày lập: " + invoice.getIssuedAt().format(dtf);
+        g2.drawString(subTitle, paperX + (paperW - g2.getFontMetrics().stringWidth(subTitle)) / 2, curY);
+
+        curY += 16;
+        Booking b = invoice.getBooking();
+        List<Guest> guestList = b.getGuests();
+        int boxH = 88 + Math.max(0, guestList.size() - 1) * 18;
+
+        g2.setColor(new Color(245, 247, 250));
+        g2.fillRoundRect(leftX, curY, paperW - 56, boxH, 8, 8);
+        g2.setColor(new Color(215, 220, 228));
+        g2.drawRoundRect(leftX, curY, paperW - 56, boxH, 8, 8);
+
+        DateTimeFormatter df = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+        Guest primary = b.getPrimaryGuest();
+        g2.setColor(new Color(40, 40, 40));
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        g2.drawString("Khách đại diện:", leftX + 14, curY + 22);
+        g2.drawString("Số CCCD / ĐT:", leftX + 14, curY + 44);
+        g2.drawString("Chính sách giá:", leftX + 14, curY + 66);
+
+        g2.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        g2.drawString(primary.getName() + " (" + primary.getGender().getLabel() + ")", leftX + 112, curY + 22);
+        g2.drawString(primary.getCccd() + " - " + primary.getPhone(), leftX + 112, curY + 44);
+        g2.drawString(invoice.getAppliedPolicy().getPolicyName(), leftX + 112, curY + 66);
+
+        int midX = leftX + 320;
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        g2.drawString("Phòng lưu trú:", midX, curY + 22);
+        g2.drawString("Nhận - Trả:", midX, curY + 44);
+        g2.drawString("Số lượng khách:", midX, curY + 66);
+
+        g2.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        g2.drawString("Phòng " + b.getRoom().getRoomNumber() + " (" + b.getRoom().getRoomTypeName() + ")", midX + 100, curY + 22);
+        g2.drawString(b.getCheckIn().format(df) + " -> " + b.getCheckOut().format(df), midX + 100, curY + 44);
+        g2.drawString(guestList.size() + " khách (" + b.nights() + " đêm)", midX + 100, curY + 66);
+
+        if (guestList.size() > 1) {
+            int gy = curY + 86;
+            g2.setFont(new Font("Segoe UI", Font.BOLD, 11));
+            g2.setColor(new Color(25, 55, 109));
+            g2.drawString("Khách ở cùng:", leftX + 14, gy);
+            g2.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+            for (int i = 1; i < guestList.size(); i++) {
+                Guest acc = guestList.get(i);
+                g2.drawString(String.format("• %s (%s - CCCD: %s - SĐT: %s)",
+                        acc.getName(), acc.getGender().getLabel(), acc.getCccd(), acc.getPhone()), leftX + 112, gy);
+                gy += 18;
+            }
+        }
+
+        curY += boxH + 16;
+        int tableW = paperW - 56;
+        g2.setColor(new Color(25, 55, 109));
+        g2.fillRoundRect(leftX, curY, tableW, 30, 6, 6);
+        g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        g2.drawString("STT", leftX + 12, curY + 20);
+        g2.drawString("HÌNH", leftX + 48, curY + 20);
+        g2.drawString("NỘI DUNG HẠNG MỤC / DỊCH VỤ", leftX + 98, curY + 20);
+        g2.drawString("SL", leftX + 375, curY + 20);
+        g2.drawString("THÀNH TIỀN (VNĐ)", leftX + 455, curY + 20);
+
+        curY += 30;
+        NumberFormat vnd = NumberFormat.getNumberInstance(HotelBookingApp.VI_LOCALE);
+
+        drawTableRow(g2, leftX, curY, tableW, 1, null,
+                "Tiền thuê Phòng " + b.getRoom().getRoomNumber() + " (" + b.getRoom().getRoomTypeName() + " - " + guestList.size() + " khách)",
+                b.nights() + " đêm", vnd.format(invoice.getRoomCharge()) + " đ");
+        curY += 42;
+
+        List<ServiceCharge> charges = invoice.getServiceCharges();
+        int stt = 2;
+        for (ServiceCharge sc : charges) {
+            drawTableRow(g2, leftX, curY, tableW, stt++, sc.getType(),
+                    sc.getServiceName(), "01 gói", vnd.format(sc.getAmount()) + " đ");
+            curY += 42;
+        }
+
+        if (!charges.isEmpty()) {
+            curY += 10;
+            g2.setColor(new Color(25, 55, 109));
+            g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
+            g2.drawString("HÌNH ẢNH XÁC NHẬN DỊCH VỤ ĐÃ SỬ DỤNG:", leftX, curY + 14);
+            curY += 22;
+
+            int cardW = 136, cardH = 78, cardGap = 12, cardX = leftX;
+            for (ServiceCharge sc : charges) {
+                g2.setColor(Color.WHITE);
+                g2.fillRoundRect(cardX, curY, cardW, cardH, 10, 10);
+                g2.setColor(sc.getType().getThemeColor());
+                g2.setStroke(new BasicStroke(1.5f));
+                g2.drawRoundRect(cardX, curY, cardW, cardH, 10, 10);
+
+                drawServiceIllustration(g2, sc.getType(), cardX + (cardW - 36) / 2, curY + 6, 36);
+
+                g2.setColor(new Color(40, 40, 40));
+                g2.setFont(new Font("Segoe UI", Font.BOLD, 11));
+                String label = sc.getType().getShortTitle();
+                g2.drawString(label, cardX + (cardW - g2.getFontMetrics().stringWidth(label)) / 2, curY + 56);
+
+                g2.setColor(new Color(185, 28, 28));
+                g2.setFont(new Font("Segoe UI", Font.PLAIN, 10));
+                String priceStr = "+" + vnd.format(sc.getAmount()) + " đ";
+                g2.drawString(priceStr, cardX + (cardW - g2.getFontMetrics().stringWidth(priceStr)) / 2, curY + 71);
+
+                cardX += cardW + cardGap;
+            }
+            curY += cardH + 8;
+        }
+
+        curY += 12;
+        g2.setColor(new Color(250, 242, 242));
+        g2.fillRoundRect(leftX, curY, tableW, 66, 8, 8);
+        g2.setColor(new Color(220, 180, 180));
+        g2.drawRoundRect(leftX, curY, tableW, 66, 8, 8);
+
+        g2.setColor(new Color(70, 70, 70));
+        g2.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        g2.drawString("Cộng tiền phòng: " + vnd.format(invoice.getRoomCharge()) + " đ   |   Cộng phí dịch vụ: "
+                + vnd.format(invoice.getTotalServiceCharges()) + " đ", leftX + 14, curY + 24);
+
+        g2.setColor(new Color(185, 28, 28));
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 17));
+        g2.drawString("TỔNG CỘNG THANH TOÁN:", leftX + 14, curY + 52);
+        String grandTotalStr = vnd.format(invoice.getGrandTotal()) + " VNĐ";
+        g2.drawString(grandTotalStr, rightX - g2.getFontMetrics().stringWidth(grandTotalStr) - 16, curY + 52);
+
+        curY += 86;
+        g2.setColor(new Color(60, 60, 60));
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        g2.drawString("KHÁCH HÀNG ĐẠI DIỆN", leftX + 35, curY);
+        g2.drawString("ĐẠI DIỆN NHÓM8HOTELBOOKING", rightX - 215, curY);
+
+        g2.setFont(new Font("Segoe UI", Font.ITALIC, 11));
+        g2.setColor(Color.GRAY);
+        g2.drawString("(Ký, ghi rõ họ tên)", leftX + 45, curY + 16);
+        g2.drawString("(Ký, đóng dấu mộc đỏ)", rightX - 182, curY + 16);
+
+        g2.setColor(new Color(30, 60, 140));
+        g2.setFont(new Font("Segoe Script", Font.ITALIC, 15));
+        g2.drawString(primary.getName(), leftX + 28, curY + 68);
+
+        drawRedCompanyStamp(g2, rightX - 195, curY + 8);
+        g2.dispose();
+    }
+
+    private void drawTableRow(Graphics2D g2, int x, int y, int w, int stt, ServiceType type,
+                              String name, String qty, String amount) {
+        g2.setColor(stt % 2 == 0 ? new Color(249, 250, 252) : Color.WHITE);
+        g2.fillRect(x, y, w, 42);
+        g2.setColor(new Color(230, 232, 236));
+        g2.drawLine(x, y + 42, x + w, y + 42);
+
+        g2.setColor(Color.DARK_GRAY);
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        g2.drawString(String.format("%02d", stt), x + 14, y + 26);
+
+        drawServiceIllustration(g2, type, x + 46, y + 5, 32);
+
+        g2.setColor(new Color(30, 35, 45));
+        g2.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        g2.drawString(name, x + 98, y + 26);
+        g2.drawString(qty, x + 370, y + 26);
+
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 13));
+        g2.drawString(amount, x + w - g2.getFontMetrics().stringWidth(amount) - 14, y + 26);
+    }
+
+    private void drawServiceIllustration(Graphics2D g2, ServiceType type, int x, int y, int size) {
+        Graphics2D g = (Graphics2D) g2.create();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        if (type == null) {
+            g.setColor(new Color(52, 152, 219, 35));
+            g.fillRoundRect(x, y, size, size, 8, 8);
+            g.setColor(new Color(41, 128, 185));
+            g.fillRoundRect(x + 4, y + size / 2, size - 8, size / 4, 4, 4);
+            g.fillRect(x + 4, y + size / 3, 4, size / 2);
+            g.setColor(new Color(236, 240, 241));
+            g.fillRoundRect(x + 9, y + size / 2 - 4, 8, 5, 3, 3);
+        } else {
+            Color c = type.getThemeColor();
+            g.setColor(new Color(c.getRed(), c.getGreen(), c.getBlue(), 35));
+            g.fillRoundRect(x, y, size, size, 8, 8);
+            g.setColor(c);
+            g.setStroke(new BasicStroke(1.8f));
+
+            switch (type) {
+                case MINIBAR:
+                    int cx = x + size / 2;
+                    int[] px = {x + 7, x + size - 7, cx};
+                    int[] py = {y + 9, y + 9, y + size / 2 + 3};
+                    g.fillPolygon(px, py, 3);
+                    g.drawLine(cx, y + size / 2 + 2, cx, y + size - 6);
+                    g.drawLine(cx - 6, y + size - 6, cx + 6, y + size - 6);
+                    g.setColor(new Color(231, 76, 60));
+                    g.drawLine(cx + 1, y + 11, x + size - 6, y + 4);
+                    break;
+                case LAUNDRY:
+                    int mx = x + size / 2;
+                    g.drawArc(mx - 4, y + 4, 8, 6, 0, 180);
+                    int[] sx = {mx - 10, mx - 4, mx + 4, mx + 10, mx + 7, mx + 7, mx - 7, mx - 7};
+                    int[] sy = {y + 13, y + 9, y + 9, y + 13, y + 17, y + size - 5, y + size - 5, y + 17};
+                    g.fillPolygon(sx, sy, 8);
+                    g.setColor(Color.WHITE);
+                    g.fillOval(mx - 2, y + 15, 4, 4);
+                    break;
+                case BREAKFAST:
+                    g.fillRoundRect(x + 7, y + 13, size - 16, size - 19, 6, 6);
+                    g.drawOval(x + size - 13, y + 15, 6, 8);
+                    g.drawLine(x + 5, y + size - 5, x + size - 7, y + size - 5);
+                    g.drawArc(x + 10, y + 5, 4, 6, 45, 180);
+                    g.drawArc(x + 16, y + 5, 4, 6, 45, 180);
+                    break;
+                case SPA:
+                    int scx = x + size / 2;
+                    int scy = y + size / 2 + 2;
+                    g.fillOval(scx - 4, scy - 11, 8, 14);
+                    g.fillOval(scx - 11, scy - 7, 9, 11);
+                    g.fillOval(scx + 2, scy - 7, 9, 11);
+                    g.setColor(new Color(100, 100, 110));
+                    g.fillRoundRect(scx - 9, scy + 5, 18, 5, 4, 4);
+                    break;
+            }
+        }
+        g.dispose();
+    }
+
+    private void drawRedCompanyStamp(Graphics2D g2, int x, int y) {
+        Graphics2D g = (Graphics2D) g2.create();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        AffineTransform old = g.getTransform();
+        g.rotate(Math.toRadians(-11), x + 65, y + 60);
+
+        Color stampRed = new Color(210, 22, 22, 205);
+        g.setColor(stampRed);
+
+        int d = 116;
+        g.setStroke(new BasicStroke(3.2f));
+        g.drawOval(x, y, d, d);
+        g.setStroke(new BasicStroke(1.2f));
+        g.drawOval(x + 6, y + 6, d - 12, d - 12);
+        g.drawOval(x + 26, y + 26, d - 52, d - 52);
+
+        g.setFont(new Font("Segoe UI", Font.BOLD, 9));
+        String topText = "CÔNG TY TNHH";
+        g.drawString(topText, x + (d - g.getFontMetrics().stringWidth(topText)) / 2, y + 19);
+
+        String botText = "M.S.D.N: 0108889999";
+        g.drawString(botText, x + (d - g.getFontMetrics().stringWidth(botText)) / 2, y + d - 11);
+
+        g.setFont(new Font("Segoe UI Symbol", Font.BOLD, 12));
+        g.drawString("★", x + 10, y + d / 2 + 4);
+        g.drawString("★", x + d - 21, y + d / 2 + 4);
+
+        g.setColor(new Color(255, 250, 250, 235));
+        g.fillRoundRect(x + 4, y + d / 2 - 14, d - 8, 28, 6, 6);
+        g.setColor(stampRed);
+        g.setStroke(new BasicStroke(1.8f));
+        g.drawRoundRect(x + 4, y + d / 2 - 14, d - 8, 28, 6, 6);
+
+        g.setFont(new Font("Segoe UI", Font.BOLD, 10));
+        String centerName = Invoice.COMPANY_NAME;
+        g.drawString(centerName, x + (d - g.getFontMetrics().stringWidth(centerName)) / 2, y + d / 2 - 1);
+
+        g.setFont(new Font("Segoe UI", Font.BOLD, 9));
+        String paidLabel = "ĐÃ THU TIỀN";
+        g.drawString(paidLabel, x + (d - g.getFontMetrics().stringWidth(paidLabel)) / 2, y + d / 2 + 11);
+
+        g.setTransform(old);
+
+        g.setColor(new Color(20, 50, 140, 210));
+        g.setFont(new Font("Segoe Script", Font.BOLD | Font.ITALIC, 15));
+        g.drawString("Nhóm 8 Hotel", x + 15, y + d + 6);
+
+        g.dispose();
+    }
+
+    private void drawHotelLogo(Graphics2D g2, int x, int y) {
+        g2.setColor(new Color(25, 55, 109));
+        g2.fillRoundRect(x, y + 4, 46, 46, 12, 12);
+        g2.setColor(new Color(241, 196, 15));
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 22));
+        g2.drawString("N8", x + 8, y + 35);
+    }
+
+    private void drawBarcode(Graphics2D g2, int x, int y, String code) {
+        g2.setColor(Color.BLACK);
+        int curX = x;
+        for (int i = 0; i < 24; i++) {
+            int barW = (i % 3 == 0) ? 3 : 1;
+            g2.fillRect(curX, y, barW, 28);
+            curX += barW + ((i % 2 == 0) ? 2 : 3);
+        }
+        g2.setFont(new Font("Consolas", Font.PLAIN, 10));
+        g2.drawString("* " + code + " *", x + 12, y + 40);
+    }
+}
+
+class RoomFilterDialog extends JDialog {
+    private final List<Room> allRooms;
+    private final JComboBox<String> cboType = new JComboBox<>(new String[]{"Tất cả", "Standard", "Deluxe", "Suite"});
+    private final JComboBox<String> cboStatus = new JComboBox<>(new String[]{"Tất cả", "Trống", "Đang có khách", "Bảo trì", "Cần dọn phòng"});
+    private final DefaultTableModel model;
+    private List<Room> currentList;
+
+    public RoomFilterDialog(JFrame parent, List<Room> allRooms, Consumer<Room> onPick) {
+        super(parent, "Tra cứu & Lọc Phòng", true);
+        this.allRooms = allRooms;
+        setSize(680, 420);
+        setLocationRelativeTo(parent);
+        setLayout(new BorderLayout(8, 8));
+
+        JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        top.add(new JLabel("Hạng phòng:")); top.add(cboType);
+        top.add(new JLabel("Trạng thái:")); top.add(cboStatus);
+        cboType.addActionListener(e -> filter());
+        cboStatus.addActionListener(e -> filter());
+
+        model = new DefaultTableModel(new String[]{"Số Phòng", "Tầng", "Hạng Phòng", "Giá/Đêm", "Trạng Thái", "Dọn phòng"}, 0);
+        JTable table = new JTable(model);
+        table.setRowHeight(24);
+
+        JButton btnSelect = new JButton("Chọn phòng này trên Sơ đồ");
+        btnSelect.addActionListener(e -> {
+            int r = table.getSelectedRow();
+            if (r >= 0 && r < currentList.size()) {
+                onPick.accept(currentList.get(r));
+                dispose();
+            }
+        });
+        JPanel south = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        south.add(btnSelect);
+
+        add(top, BorderLayout.NORTH);
+        add(new JScrollPane(table), BorderLayout.CENTER);
+        add(south, BorderLayout.SOUTH);
+        filter();
+    }
+
+    private void filter() {
+        String t = (String) cboType.getSelectedItem();
+        String s = (String) cboStatus.getSelectedItem();
+        currentList = allRooms.stream()
+                .filter(r -> "Tất cả".equals(t) || r.getRoomTypeName().equalsIgnoreCase(t))
+                .filter(r -> {
+                    if ("Cần dọn phòng".equals(s)) return r.isCleaningRequested();
+                    return "Tất cả".equals(s) || r.getStatus().getDisplayName().equalsIgnoreCase(s);
+                })
+                .collect(Collectors.toList());
+        model.setRowCount(0);
+        NumberFormat vnd = NumberFormat.getNumberInstance(HotelBookingApp.VI_LOCALE);
+        for (Room r : currentList) {
+            model.addRow(new Object[]{
+                    r.getRoomNumber(), "Tầng " + r.getFloor(), r.getRoomTypeName(),
+                    vnd.format(r.getPricePerNight()) + " đ", r.getStatus().getDisplayName(),
+                    r.isCleaningRequested() ? "Đang yêu cầu dọn" : "Đã sạch"
+            });
+        }
+    }
+}
+
+class AboutDialog extends JDialog {
+    public AboutDialog(JFrame parent) {
+        super(parent, "Thông tin Nhóm8HotelBooking", true);
+        setSize(620, 440);
+        setLocationRelativeTo(parent);
+        setLayout(new BorderLayout(10, 10));
+
+        JTextArea txt = new JTextArea(
+                "HỌC VIỆN CÔNG NGHỆ BƯU CHÍNH VIỄN THÔNG (PTIT)\n" +
+                "Môn học: INT1332 - Lập trình Hướng đối tượng\n" +
+                "Đơn vị: CÔNG TY TNHH NHÓM8HOTELBOOKING\n\n" +
+                "PHÂN CÔNG NHIỆM VỤ 9 THÀNH VIÊN:\n" +
+                "1. Thành viên 1 (Nhóm trưởng): HotelBookingApp, BaseWindow, MainWindow\n" +
+                "2. Thành viên 2: Room (abstract + cờ dọn phòng), RoomStatus, StandardRoom, DeluxeRoom, SuiteRoom\n" +
+                "3. Thành viên 3: Guest (có Giới tính), Booking (nhiều khách), RoomNotAvailableException\n" +
+                "4. Thành viên 4: PricingPolicy (Strategy BONUS), ServiceCharge, Invoice\n" +
+                "5. Thành viên 5: HotelRepository, InMemoryHotelRepository, BookingService (Thêm Phòng/Tầng)\n" +
+                "6. Thành viên 6: RoomMapPanel (Sơ đồ 2D co giãn động), RoomDetailPanel (Yêu cầu dọn phòng)\n" +
+                "7. Thành viên 7: BookingDialog (Nhiều khách + Giới tính), AddRoomFloorDialog, BookingTableModel\n" +
+                "8. Thành viên 8: InvoiceDialog, InvoicePaperPanel (Mộc đỏ & Hình ảnh DV), RoomFilterDialog\n" +
+                "9. Thành viên 9: ChartWindow, BarChartPanel, LineChartPanel (Biểu đồ Công suất & Doanh thu)\n"
+        );
+        txt.setEditable(false);
+        txt.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        txt.setBorder(new EmptyBorder(12, 16, 12, 16));
+
+        JButton btn = new JButton("Đóng");
+        btn.addActionListener(e -> dispose());
+        JPanel p = new JPanel(); p.add(btn);
+
+        add(new JScrollPane(txt), BorderLayout.CENTER);
+        add(p, BorderLayout.SOUTH);
+    }
+}
+
+/* ============================================================================
+ * PHẦN 9 - THÀNH VIÊN 9: Cửa sổ Biểu đồ (BarChart & LineChart)
+ * ============================================================================ */
+class ChartWindow extends JFrame {
+    private final BookingService service;
+    private final BarChartPanel barChartPanel = new BarChartPanel();
+    private final LineChartPanel lineChartPanel = new LineChartPanel();
+
+    public ChartWindow(BookingService service) {
+        super("Biểu đồ Thống kê Công suất phòng & Doanh thu 14 ngày - Nhóm8HotelBooking");
+        this.service = service;
+        setSize(980, 540);
+        setLocationRelativeTo(null);
+        setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("1. Biểu đồ Cột (BarChart): Công suất phòng (%)", barChartPanel);
+        tabs.addTab("2. Biểu đồ Đường (LineChart): Doanh thu 14 ngày gần nhất", lineChartPanel);
+
+        add(tabs, BorderLayout.CENTER);
+        refreshCharts();
+    }
+
+    public void refreshCharts() {
+        barChartPanel.setData(service.calculateOccupancyRateByRoomType());
+        lineChartPanel.setData(service.getRevenueLast14Days());
+    }
+}
+
+class BarChartPanel extends JPanel {
+    private Map<String, Double> data = Collections.emptyMap();
+
+    public void setData(Map<String, Double> data) {
+        this.data = data;
+        repaint();
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        int w = getWidth(), h = getHeight();
+        g2.setColor(Color.WHITE);
+        g2.fillRect(0, 0, w, h);
+
+        g2.setColor(new Color(44, 62, 80));
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 18));
+        String title = "Tỷ lệ Lấp đầy (Công suất %) theo Hạng phòng";
+        g2.drawString(title, (w - g2.getFontMetrics().stringWidth(title)) / 2, 36);
+
+        int left = 80, right = 50, top = 70, bottom = 70;
+        int chartW = w - left - right, chartH = h - top - bottom;
+
+        g2.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        for (int pct = 0; pct <= 100; pct += 20) {
+            int y = top + chartH - (pct * chartH / 100);
+            g2.setColor(new Color(230, 230, 230));
+            g2.drawLine(left, y, left + chartW, y);
+            g2.setColor(Color.DARK_GRAY);
+            g2.drawString(pct + "%", left - 42, y + 5);
+        }
+
+        g2.setColor(Color.BLACK);
+        g2.drawLine(left, top, left, top + chartH);
+        g2.drawLine(left, top + chartH, left + chartW, top + chartH);
+
+        if (!data.isEmpty()) {
+            int n = data.size();
+            int slotW = chartW / n;
+            int barW = Math.min(110, slotW / 2);
+            Color[] colors = {new Color(52, 152, 219), new Color(46, 204, 113), new Color(155, 89, 182)};
+            int idx = 0;
+
+            for (Map.Entry<String, Double> entry : data.entrySet()) {
+                double val = Math.min(100.0, entry.getValue());
+                int barH = (int) Math.round((val / 100.0) * chartH);
+                int x = left + idx * slotW + (slotW - barW) / 2;
+                int y = top + chartH - barH;
+
+                g2.setColor(colors[idx % colors.length]);
+                g2.fillRoundRect(x, y, barW, barH, 8, 8);
+
+                g2.setColor(Color.BLACK);
+                g2.setFont(new Font("Segoe UI", Font.BOLD, 13));
+                String valStr = String.format("%.1f%%", val);
+                g2.drawString(valStr, x + (barW - g2.getFontMetrics().stringWidth(valStr)) / 2, y - 8);
+                g2.drawString(entry.getKey(), x + (barW - g2.getFontMetrics().stringWidth(entry.getKey())) / 2, top + chartH + 25);
+                idx++;
+            }
+        }
+        g2.dispose();
+    }
+}
+
+class LineChartPanel extends JPanel {
+    private Map<LocalDate, Double> data = Collections.emptyMap();
+
+    public void setData(Map<LocalDate, Double> data) {
+        this.data = data;
+        repaint();
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        int w = getWidth(), h = getHeight();
+        g2.setColor(Color.WHITE);
+        g2.fillRect(0, 0, w, h);
+
+        g2.setColor(new Color(44, 62, 80));
+        g2.setFont(new Font("Segoe UI", Font.BOLD, 18));
+        String title = "Biến động Doanh thu 14 Ngày gần nhất (Triệu VNĐ)";
+        g2.drawString(title, (w - g2.getFontMetrics().stringWidth(title)) / 2, 36);
+
+        int left = 80, right = 45, top = 70, bottom = 75;
+        int chartW = w - left - right, chartH = h - top - bottom;
+
+        double maxMillion = data.values().stream().mapToDouble(v -> v / 1_000_000.0).max().orElse(10.0);
+        maxMillion = Math.ceil(maxMillion / 2.0) * 2.0;
+
+        g2.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        for (int i = 0; i <= 5; i++) {
+            double labelVal = maxMillion * i / 5.0;
+            int y = top + chartH - (int) (chartH * (labelVal / maxMillion));
+            g2.setColor(new Color(230, 230, 230));
+            g2.drawLine(left, y, left + chartW, y);
+            g2.setColor(Color.DARK_GRAY);
+            g2.drawString(String.format("%.1f tr", labelVal), left - 55, y + 5);
+        }
+
+        g2.setColor(Color.BLACK);
+        g2.drawLine(left, top, left, top + chartH);
+        g2.drawLine(left, top + chartH, left + chartW, top + chartH);
+
+        if (data.size() > 1) {
+            List<Map.Entry<LocalDate, Double>> list = new ArrayList<>(data.entrySet());
+            int n = list.size();
+            int[] px = new int[n];
+            int[] py = new int[n];
+            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd/MM");
+
+            for (int i = 0; i < n; i++) {
+                double mVal = list.get(i).getValue() / 1_000_000.0;
+                px[i] = left + (i * chartW) / (n - 1);
+                py[i] = top + chartH - (int) ((mVal / maxMillion) * chartH);
+            }
+
+            g2.setColor(new Color(231, 76, 60));
+            g2.setStroke(new BasicStroke(2.8f));
+            for (int i = 0; i < n - 1; i++) {
+                g2.drawLine(px[i], py[i], px[i + 1], py[i + 1]);
+            }
+
+            for (int i = 0; i < n; i++) {
+                g2.setColor(new Color(192, 57, 43));
+                g2.fillOval(px[i] - 5, py[i] - 5, 10, 10);
+                g2.setColor(Color.DARK_GRAY);
+                g2.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+                g2.drawString(list.get(i).getKey().format(fmt), px[i] - 16, top + chartH + 22);
+                g2.drawString(String.format("%.1f", list.get(i).getValue() / 1_000_000.0), px[i] - 10, py[i] - 10);
+            }
+        }
+        g2.dispose();
+    }
+}
